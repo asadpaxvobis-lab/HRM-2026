@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { toast } from 'sonner'
+import { localDatetimeInputToIso } from '@/lib/attendance'
 
 type Correction = {
   id: string
@@ -145,8 +146,8 @@ export function CorrectionsPage() {
       employee_id: form.employee_id,
       attendance_date: form.attendance_date,
       reason: form.reason.trim(),
-      proposed_in: form.proposed_in ? new Date(form.proposed_in).toISOString() : null,
-      proposed_out: form.proposed_out ? new Date(form.proposed_out).toISOString() : null,
+      proposed_in: form.proposed_in ? localDatetimeInputToIso(form.proposed_in) : null,
+      proposed_out: form.proposed_out ? localDatetimeInputToIso(form.proposed_out) : null,
       requested_by: appUser.id,
     }
     const { data, error } = await supabase.from('attendance_corrections').insert(payload).select('id').single()

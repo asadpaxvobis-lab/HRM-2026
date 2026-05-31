@@ -160,7 +160,7 @@ The first thing you'll see is the change-password screen because the seeded admi
 
 ### Phase 3 optional / later
 - Full SignalR hub (.NET) instead of Supabase Realtime only
-- Deploy `zkteco-push` to production if not already (`supabase functions deploy zkteco-push`)
+- Edge Functions deployed: `zkteco-push` (JWT off, push-token auth) and `create-user` (admin user creation without email confirm)
 
 ## Profile (placeholder replaced)
 - `/profile` — name update, change password, permission summary by module

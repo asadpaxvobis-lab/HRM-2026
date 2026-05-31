@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
       email,
       password,
       email_confirm: true,
-      user_metadata: { full_name, force_password_change: true },
+      user_metadata: { full_name, force_password_change: false },
     })
 
     if (createErr || !created.user) {
@@ -97,7 +97,7 @@ Deno.serve(async (req) => {
       full_name: full_name ?? null,
       phone: phone ?? null,
       status: 'Active',
-      force_password_change: true,
+      force_password_change: false,
       created_by: userData.user.id,
     })
 

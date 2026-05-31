@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, RefreshCw, KeyRound, ShieldOff, ShieldCheck, Loader2, Search, UserPlus, AlertCircle, Trash2 } from 'lucide-react'
+import { Plus, RefreshCw, KeyRound, ShieldOff, ShieldCheck, Loader2, Search, UserPlus, AlertCircle, Trash2, Pencil } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -28,12 +28,16 @@ import { avatarColorFor, initialsFromName, formatRelative } from '@/lib/utils'
 import { toast } from 'sonner'
 import { createUserViaAdmin } from '@/lib/createUser'
 import { deleteUserViaAdmin } from '@/lib/deleteUser'
+import { updateUserViaAdmin } from '@/lib/updateUser'
+import { resetUserPasswordViaAdmin } from '@/lib/resetUserPassword'
 import { writeAuditLog } from '@/lib/audit'
+import { Select } from '@/components/ui/select'
 
 type UserRow = {
   id: string
   email: string
   full_name: string | null
+  phone: string | null
   status: 'Active' | 'Disabled' | 'Pending'
   force_password_change: boolean
   last_login_at: string | null
@@ -50,6 +54,7 @@ export function UsersPage() {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<UserRow | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<UserRow | null>(null)
 
   async function load() {
@@ -57,7 +62,7 @@ export function UsersPage() {
     const [usersRes, rolesRes] = await Promise.all([
       supabase
         .from('users')
-        .select('id, email, full_name, status, force_password_change, last_login_at, created_at, user_roles!user_id(roles(id,name))')
+        .select('id, email, full_name, phone, status, force_password_change, last_login_at, created_at, user_roles!user_id(roles(id,name))')
         .order('created_at', { ascending: false }),
       supabase.from('roles').select('id, name, description').order('name'),
     ])
@@ -69,6 +74,7 @@ export function UsersPage() {
       id: u.id,
       email: u.email,
       full_name: u.full_name,
+      phone: u.phone,
       status: u.status,
       force_password_change: u.force_password_change,
       last_login_at: u.last_login_at,
@@ -197,6 +203,14 @@ export function UsersPage() {
                       <Button
                         variant="ghost"
                         size="sm"
+                        title="Edit user"
+                        onClick={() => setEditTarget(u)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         title={u.status === 'Active' ? 'Disable user' : 'Enable user'}
                         onClick={() => toggleStatus(u)}
                       >
@@ -211,18 +225,8 @@ export function UsersPage() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        title="Force password reset"
-                        onClick={async () => {
-                          const { error } = await supabase
-                            .from('users')
-                            .update({ force_password_change: true })
-                            .eq('id', u.id)
-                          if (error) toast.error('Failed', { description: error.message })
-                          else {
-                            toast.success('User will be prompted to change password on next login')
-                            void load()
-                          }
-                        }}
+                        title="Reset password"
+                        onClick={() => setEditTarget(u)}
                       >
                         <KeyRound className="h-4 w-4" />
                       </Button>
@@ -252,6 +256,16 @@ export function UsersPage() {
         onOpenChange={setCreateOpen}
         roles={roles}
         onCreated={() => void load()}
+      />
+
+      <EditUserDialog
+        user={editTarget}
+        roles={roles}
+        onOpenChange={(open) => !open && setEditTarget(null)}
+        onSaved={() => {
+          setEditTarget(null)
+          void load()
+        }}
       />
 
       <DeleteUserDialog
@@ -400,7 +414,7 @@ function CreateUserDialog({
         <DialogHeader>
           <DialogTitle>Create user</DialogTitle>
           <DialogDescription>
-            They'll sign in with a temporary password and be asked to change it.
+            They'll sign in with the password you set below.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="space-y-4">
@@ -426,7 +440,7 @@ function CreateUserDialog({
                 minLength={6}
                 required
               />
-              <p className="text-xs text-muted-foreground">Min 6 chars. User will be required to change it on first login.</p>
+              <p className="text-xs text-muted-foreground">Min 6 chars. User can sign in with this password immediately.</p>
             </div>
           </div>
 
@@ -470,6 +484,259 @@ function CreateUserDialog({
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function EditUserDialog({
+  user,
+  roles,
+  onOpenChange,
+  onSaved,
+}: {
+  user: UserRow | null
+  roles: RoleOption[]
+  onOpenChange: (open: boolean) => void
+  onSaved: () => void
+}) {
+  const { appUser, hasPermission } = useAuth()
+  const canResetPassword = hasPermission('user.reset_password')
+  const isSelf = user?.id === appUser?.id
+  const [fullName, setFullName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [status, setStatus] = useState<UserRow['status']>('Active')
+  const [selectedRoles, setSelectedRoles] = useState<Set<string>>(new Set())
+  const [newPassword, setNewPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [resetBusy, setResetBusy] = useState(false)
+
+  useEffect(() => {
+    if (!user) return
+    setFullName(user.full_name ?? '')
+    setPhone(user.phone ?? '')
+    setStatus(user.status)
+    setSelectedRoles(new Set(user.roles.map((r) => r.id)))
+    setNewPassword('')
+  }, [user])
+
+  const open = user !== null
+
+  const onSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!user) return
+    if (!isSelf && selectedRoles.size === 0) {
+      toast.error('Select at least one role')
+      return
+    }
+    if (canResetPassword && newPassword.length > 0 && newPassword.length < 6) {
+      toast.error('Password must be at least 6 characters')
+      return
+    }
+    setBusy(true)
+    try {
+      const { error } = await updateUserViaAdmin({
+        user_id: user.id,
+        full_name: fullName,
+        phone,
+        status,
+        role_ids: isSelf ? undefined : Array.from(selectedRoles),
+      })
+      if (error) {
+        toast.error('Could not update user', { description: error })
+        return
+      }
+
+      if (canResetPassword && newPassword.length >= 6) {
+        const reset = await resetUserPasswordViaAdmin(user.id, newPassword)
+        if (reset.error) {
+          toast.error('Profile saved but password reset failed', { description: reset.error })
+          return
+        }
+        await writeAuditLog({
+          action: 'UPDATE',
+          entityType: 'user',
+          entityId: user.id,
+          after: { password_reset: true },
+        })
+        toast.success('User updated and password reset', {
+          description: `${user.email} can sign in with the new password.`,
+        })
+        setNewPassword('')
+        onSaved()
+        return
+      }
+
+      await writeAuditLog({
+        action: 'UPDATE',
+        entityType: 'user',
+        entityId: user.id,
+        after: { full_name: fullName, phone, status, roles: Array.from(selectedRoles) },
+      })
+      toast.success('User updated')
+      onSaved()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onResetPassword = async () => {
+    if (!user || !canResetPassword) return
+    if (newPassword.length < 6) {
+      toast.error('Password must be at least 6 characters')
+      return
+    }
+    setResetBusy(true)
+    try {
+      const { error } = await resetUserPasswordViaAdmin(user.id, newPassword)
+      if (error) {
+        toast.error('Could not reset password', { description: error })
+        return
+      }
+      await writeAuditLog({
+        action: 'UPDATE',
+        entityType: 'user',
+        entityId: user.id,
+        after: { password_reset: true },
+      })
+      toast.success('Password reset', {
+        description: `${user.email} can sign in with the new password.`,
+      })
+      setNewPassword('')
+      onSaved()
+    } finally {
+      setResetBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit user</DialogTitle>
+          <DialogDescription>
+            Update profile and roles. Administrators can set a new temporary password below.
+          </DialogDescription>
+        </DialogHeader>
+        {user && (
+          <form onSubmit={onSave} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_email">Email</Label>
+              <Input id="edit_email" value={user.email} readOnly disabled className="bg-muted/50" />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="edit_full_name">Full name</Label>
+                <Input
+                  id="edit_full_name"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit_phone">Phone</Label>
+                <Input id="edit_phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="edit_status">Status</Label>
+                <Select
+                  id="edit_status"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as UserRow['status'])}
+                  disabled={isSelf}
+                >
+                  <option value="Active">Active</option>
+                  <option value="Disabled">Disabled</option>
+                  <option value="Pending">Pending</option>
+                </Select>
+                {isSelf && (
+                  <p className="text-xs text-muted-foreground">You cannot change your own account status.</p>
+                )}
+              </div>
+            </div>
+
+            {!isSelf && (
+              <div className="space-y-2">
+                <Label>Roles</Label>
+                <div className="grid sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto rounded-lg border p-3 bg-muted/20">
+                  {roles.map((r) => {
+                    const checked = selectedRoles.has(r.id)
+                    return (
+                      <label
+                        key={r.id}
+                        className="flex items-start gap-2 p-2 rounded cursor-pointer hover:bg-background transition-colors"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(v) => {
+                            const next = new Set(selectedRoles)
+                            if (v) next.add(r.id)
+                            else next.delete(r.id)
+                            setSelectedRoles(next)
+                          }}
+                          className="mt-0.5"
+                        />
+                        <div className="leading-tight">
+                          <div className="text-sm font-medium">{r.name}</div>
+                          {r.description && (
+                            <div className="text-xs text-muted-foreground">{r.description}</div>
+                          )}
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {canResetPassword && (
+              <div className="space-y-3 rounded-lg border border-orange-200/80 bg-orange-50/50 p-4 dark:border-orange-900/50 dark:bg-orange-950/20">
+                <div>
+                  <div className="text-sm font-medium flex items-center gap-2">
+                    <KeyRound className="h-4 w-4" />
+                    Reset password (administrator)
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Enter a new password and click <span className="font-medium">Set new password</span> or{' '}
+                    <span className="font-medium">Save changes</span>. The user can sign in with it immediately.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit_new_password">New password</Label>
+                  <Input
+                    id="edit_new_password"
+                    type="text"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    minLength={6}
+                    placeholder="Min 6 characters"
+                    autoComplete="new-password"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={resetBusy || newPassword.length < 6}
+                  onClick={() => void onResetPassword()}
+                >
+                  {resetBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Set new password
+                </Button>
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={busy}>
+                {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+                Save changes
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   )

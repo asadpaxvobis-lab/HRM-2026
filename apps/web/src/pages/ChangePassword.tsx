@@ -62,9 +62,7 @@ export function ChangePasswordPage() {
             <CardTitle>Set a new password</CardTitle>
           </div>
           <CardDescription>
-            {appUser?.force_password_change
-              ? 'For security, please set a new password before continuing.'
-              : 'Update your password'}
+            Choose a new password for your account.
           </CardDescription>
         </CardHeader>
         <CardContent>

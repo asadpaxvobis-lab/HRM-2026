@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Loader2 } from 'lucide-react'
 
 export function ProtectedRoute({ children, perm }: { children: ReactNode; perm?: string }) {
-  const { session, appUser, loading, hasPermission } = useAuth()
+  const { session, loading, hasPermission } = useAuth()
   const location = useLocation()
 
   if (loading) {
@@ -17,11 +17,6 @@ export function ProtectedRoute({ children, perm }: { children: ReactNode; perm?:
 
   if (!session) {
     return <Navigate to="/login" state={{ from: location }} replace />
-  }
-
-  // Force password change before allowing any other route
-  if (appUser?.force_password_change && location.pathname !== '/change-password') {
-    return <Navigate to="/change-password" replace />
   }
 
   if (perm && !hasPermission(perm)) {
