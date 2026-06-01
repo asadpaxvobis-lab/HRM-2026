@@ -104,11 +104,45 @@ export async function runZktAgentSyncWithProgress(
   return last
 }
 
-export async function pingZktAgent(agentUrl = getZktAgentUrl()): Promise<boolean> {
+export type ZktAgentHealth = {
+  ok: boolean
+  service?: string
+  zkemkeeper?: boolean
+  hint?: string | null
+}
+
+export async function fetchZktAgentHealth(agentUrl = getZktAgentUrl()): Promise<ZktAgentHealth | null> {
   try {
     const res = await fetch(`${baseUrl(agentUrl)}/health`)
-    return res.ok
+    if (!res.ok) return null
+    return (await res.json()) as ZktAgentHealth
   } catch {
-    return false
+    return null
+  }
+}
+
+export async function pingZktAgent(agentUrl = getZktAgentUrl()): Promise<boolean> {
+  const h = await fetchZktAgentHealth(agentUrl)
+  return h?.ok === true
+}
+
+export type ZktDeviceLanStatus = {
+  id: string
+  name: string
+  ip: string | null
+  connected: boolean
+  message?: string | null
+}
+
+export async function fetchZktDeviceLanStatuses(
+  agentUrl = getZktAgentUrl()
+): Promise<ZktDeviceLanStatus[]> {
+  try {
+    const res = await fetch(`${baseUrl(agentUrl)}/devices/status`)
+    if (!res.ok) return []
+    const data = (await res.json()) as { devices?: ZktDeviceLanStatus[] }
+    return data.devices ?? []
+  } catch {
+    return []
   }
 }

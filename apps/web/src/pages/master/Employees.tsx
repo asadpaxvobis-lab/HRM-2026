@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
+import { loadEmployeeDevicePin, syncEmployeeDevicePin } from '@/lib/employeeDevicePin'
 import { nextCode } from '@/lib/codegen'
 import { EMPLOYMENT_STATUSES, PAY_FREQUENCIES } from '@/lib/constants'
 import { PageHeader } from '@/components/master/PageHeader'
@@ -68,6 +69,7 @@ const emptyForm = {
   designation_id: '',
   reports_to_id: '',
   device_pin: '',
+  attendance_device_id: '',
   is_active: true,
 }
 
@@ -139,6 +141,7 @@ export function EmployeesPage() {
   const [departments, setDepartments] = useState<Lookup[]>([])
   const [designations, setDesignations] = useState<Lookup[]>([])
   const [managers, setManagers] = useState<Lookup[]>([])
+  const [zktDevices, setZktDevices] = useState<{ id: string; name: string; ip_address: string | null }[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -157,16 +160,23 @@ export function EmployeesPage() {
   const [existingPhotoUrl, setExistingPhotoUrl] = useState<string | null>(null)
 
   async function loadLookups() {
-    const [b, d, des, emp] = await Promise.all([
+    const [b, d, des, emp, dev] = await Promise.all([
       supabase.from('branches').select('id, name').eq('is_active', true).order('name'),
       supabase.from('departments').select('id, name').eq('is_active', true).order('name'),
       supabase.from('designations').select('id, title').eq('is_active', true).order('title'),
       supabase.from('employees').select('id, full_name, employee_code').eq('is_active', true).order('full_name'),
+      supabase
+        .from('attendance_devices')
+        .select('id, name, ip_address')
+        .eq('device_type', 'ZKTeco')
+        .eq('is_active', true)
+        .order('name'),
     ])
     setBranches((b.data ?? []).map((x) => ({ id: x.id, name: x.name })))
     setDepartments((d.data ?? []).map((x) => ({ id: x.id, name: x.name })))
     setDesignations((des.data ?? []).map((x) => ({ id: x.id, title: x.title })))
     setManagers((emp.data ?? []).map((x) => ({ id: x.id, name: `${x.full_name} (${x.employee_code})` })))
+    setZktDevices((dev.data ?? []) as { id: string; name: string; ip_address: string | null }[])
   }
 
   async function load() {
@@ -317,8 +327,22 @@ export function EmployeesPage() {
       designation_id: e.designation_id ?? '',
       reports_to_id: row.reports_to_id ? String(row.reports_to_id) : '',
       device_pin: row.device_pin != null ? String(row.device_pin) : '',
+      attendance_device_id: '',
       is_active: e.is_active,
     })
+
+    try {
+      const mapping = await loadEmployeeDevicePin(e.id, appUser?.company_id)
+      if (mapping.device_id) {
+        setForm((f) => ({
+          ...f,
+          attendance_device_id: mapping.device_id!,
+          device_pin: mapping.device_pin != null ? String(mapping.device_pin) : f.device_pin,
+        }))
+      }
+    } catch {
+      /* table may not exist until migration 0036 */
+    }
 
     if (sal) {
       setCompRecordId(sal.id)
@@ -392,15 +416,43 @@ export function EmployeesPage() {
         .from('employees')
         .update({ ...payload, ...(nextPhoto !== undefined ? { photo_url: nextPhoto } : {}) })
         .eq('id', editing.id)
-      setBusy(false)
       if (error) {
+        setBusy(false)
         toast.error('Update failed', { description: error.message })
         return false
       }
-      await writeAuditLog({ action: 'UPDATE', entityType: 'employee', entityId: editing.id })
-      toast.success('Profile saved')
-      void load()
-      return true
+      try {
+        const pin = form.device_pin.trim() ? parseInt(form.device_pin, 10) : null
+        const mapResult = await syncEmployeeDevicePin(
+          editing.id,
+          appUser.company_id,
+          form.attendance_device_id || null,
+          pin
+        )
+        setBusy(false)
+        await writeAuditLog({ action: 'UPDATE', entityType: 'employee', entityId: editing.id })
+        if (mapResult.usedFallback) {
+          toast.success('Profile saved — device + PIN linked', {
+            description:
+              'Stored in app settings for now. Run supabase/APPLY_PENDING_DEVICES.sql in Supabase when you can for full agent support.',
+          })
+        } else {
+          toast.success('Profile saved', {
+            description:
+              form.attendance_device_id && form.device_pin.trim()
+                ? 'Employee linked to device and PIN.'
+                : undefined,
+          })
+        }
+        void load()
+        return true
+      } catch (mapErr) {
+        setBusy(false)
+        toast.error('Device mapping failed', {
+          description: mapErr instanceof Error ? mapErr.message : 'Could not save per-device PIN',
+        })
+        return false
+      }
     } else {
       const { data, error } = await supabase.from('employees').insert(payload).select('id').single()
       if (error || !data) {
@@ -414,6 +466,26 @@ export function EmployeesPage() {
         if (photo_url) {
           await supabase.from('employees').update({ photo_url }).eq('id', data.id)
         }
+      }
+      try {
+        const pin = form.device_pin.trim() ? parseInt(form.device_pin, 10) : null
+        const mapResult = await syncEmployeeDevicePin(
+          data.id,
+          appUser.company_id,
+          form.attendance_device_id || null,
+          pin
+        )
+        if (mapResult.usedFallback) {
+          toast.success('Profile saved — device + PIN linked', {
+            description: 'Run APPLY_PENDING_DEVICES.sql in Supabase when you can for full agent support.',
+          })
+        }
+      } catch (mapErr) {
+        setBusy(false)
+        toast.error('Device mapping failed', {
+          description: mapErr instanceof Error ? mapErr.message : 'Could not save per-device PIN',
+        })
+        return false
       }
       setBusy(false)
       await writeAuditLog({ action: 'CREATE', entityType: 'employee', entityId: data.id })
@@ -895,19 +967,35 @@ export function EmployeesPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Device PIN (ZKTeco)</Label>
+                  <Label>ZKTeco device (machine)</Label>
+                  <Select
+                    value={form.attendance_device_id}
+                    onChange={(e) => setForm({ ...form, attendance_device_id: e.target.value })}
+                  >
+                    <option value="">— Not on biometric device —</option>
+                    {zktDevices.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                        {d.ip_address ? ` (${d.ip_address})` : ''}
+                      </option>
+                    ))}
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Each device has its own IP. The agent on the office PC reads every active device from HRM and uses
+                    this mapping so PIN 5 on GUDAM and PIN 5 on OFFICE can be different employees.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Device PIN (user ID on that machine)</Label>
                   <Input
                     type="number"
                     min={1}
                     value={form.device_pin}
                     onChange={(e) => setForm({ ...form, device_pin: e.target.value })}
-                    placeholder="Biometric user ID on device"
+                    placeholder="Same as ZKTime user ID"
                     className="font-mono"
+                    disabled={!form.attendance_device_id}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Same number as the user ID on every ZKTeco device (ZKTime). One PIN per employee for all office
-                    machines. Which device they used is stored on each punch — see Admin → Devices → PIN mapping.
-                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Reports to</Label>

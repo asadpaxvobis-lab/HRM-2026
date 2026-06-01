@@ -55,6 +55,85 @@ public sealed class SupabaseHrmClient
             ParseAgentSyncTime(r.AgentLastSyncAt))).ToList();
     }
 
+    /// <summary>Per-device PIN map; falls back to company-wide employees.device_pin if no rows exist for this device.</summary>
+    public async Task<IReadOnlyDictionary<int, Guid>> GetEmployeePinsForDeviceAsync(
+        Guid deviceId,
+        Guid companyId,
+        CancellationToken ct)
+    {
+        var url = $"{BaseUrl()}/rest/v1/employee_device_pins?device_id=eq.{deviceId}&select=employee_id,device_pin";
+        using var req = CreateRequest(HttpMethod.Get, url);
+        using var res = await _http.SendAsync(req, ct);
+        if (res.IsSuccessStatusCode)
+        {
+            var json = await res.Content.ReadAsStringAsync(ct);
+            var rows = JsonSerializer.Deserialize<List<DevicePinRow>>(json, JsonOpts) ?? [];
+            var map = new Dictionary<int, Guid>();
+            foreach (var row in rows)
+            {
+                if (row.DevicePin is > 0)
+                {
+                    map[row.DevicePin.Value] = row.EmployeeId;
+                }
+            }
+
+            if (map.Count > 0)
+            {
+                return map;
+            }
+        }
+        else if (res.StatusCode != System.Net.HttpStatusCode.NotFound)
+        {
+            res.EnsureSuccessStatusCode();
+        }
+
+        var fromSettings = await GetEmployeePinsFromAppSettingsAsync(deviceId, companyId, ct);
+        if (fromSettings.Count > 0)
+        {
+            return fromSettings;
+        }
+
+        return await GetEmployeePinsAsync(companyId, ct);
+    }
+
+    private async Task<IReadOnlyDictionary<int, Guid>> GetEmployeePinsFromAppSettingsAsync(
+        Guid deviceId,
+        Guid companyId,
+        CancellationToken ct)
+    {
+        var url = $"{BaseUrl()}/rest/v1/app_settings?company_id=eq.{companyId}&select=settings";
+        using var req = CreateRequest(HttpMethod.Get, url);
+        using var res = await _http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode) return new Dictionary<int, Guid>();
+
+        var json = await res.Content.ReadAsStringAsync(ct);
+        var rows = JsonSerializer.Deserialize<List<AppSettingsRow>>(json, JsonOpts) ?? [];
+        var settings = rows.FirstOrDefault()?.Settings;
+        if (settings is not JsonElement el || el.ValueKind != JsonValueKind.Object) return new Dictionary<int, Guid>();
+
+        if (!el.TryGetProperty("zkt_device_pin_map", out var mapEl) || mapEl.ValueKind != JsonValueKind.Array)
+        {
+            return new Dictionary<int, Guid>();
+        }
+
+        var map = new Dictionary<int, Guid>();
+        foreach (var item in mapEl.EnumerateArray())
+        {
+            if (!item.TryGetProperty("device_id", out var devEl) ||
+                !item.TryGetProperty("device_pin", out var pinEl) ||
+                !item.TryGetProperty("employee_id", out var empEl))
+            {
+                continue;
+            }
+
+            if (!Guid.TryParse(devEl.GetString(), out var devGuid) || devGuid != deviceId) continue;
+            if (!Guid.TryParse(empEl.GetString(), out var empGuid)) continue;
+            if (pinEl.TryGetInt32(out var pin) && pin > 0) map[pin] = empGuid;
+        }
+
+        return map;
+    }
+
     public async Task<IReadOnlyDictionary<int, Guid>> GetEmployeePinsAsync(Guid companyId, CancellationToken ct)
     {
         var url =
@@ -127,6 +206,33 @@ public sealed class SupabaseHrmClient
         res.EnsureSuccessStatusCode();
     }
 
+    public async Task UpdateDeviceConnectStatusAsync(Guid deviceId, bool connected, string? notes, CancellationToken ct)
+    {
+        var url = $"{BaseUrl()}/rest/v1/attendance_devices?id=eq.{deviceId}";
+        var body = new Dictionary<string, object?>
+        {
+            ["agent_connect_ok"] = connected,
+            ["agent_connect_checked_at"] = DateTimeOffset.UtcNow,
+        };
+        if (connected)
+        {
+            body["last_seen_at"] = DateTimeOffset.UtcNow;
+        }
+        if (!string.IsNullOrWhiteSpace(notes))
+        {
+            body["agent_sync_notes"] = notes;
+        }
+        var payload = JsonSerializer.Serialize(body, JsonOpts);
+        using var req = CreateRequest(HttpMethod.Patch, url);
+        req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var res = await _http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning("UpdateDeviceConnectStatus failed ({Status}): {Body}", res.StatusCode, body);
+        }
+    }
+
     private static DateTimeOffset? ParseAgentSyncTime(DateTime? value)
     {
         if (!value.HasValue) return null;
@@ -158,6 +264,17 @@ public sealed class SupabaseHrmClient
     {
         public Guid Id { get; set; }
         public int? DevicePin { get; set; }
+    }
+
+    private sealed class DevicePinRow
+    {
+        public Guid EmployeeId { get; set; }
+        public int? DevicePin { get; set; }
+    }
+
+    private sealed class AppSettingsRow
+    {
+        public JsonElement? Settings { get; set; }
     }
 }
 

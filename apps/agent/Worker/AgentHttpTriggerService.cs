@@ -24,15 +24,18 @@ public sealed class AgentHttpTriggerService : BackgroundService
     private readonly ILogger<AgentHttpTriggerService> _logger;
     private readonly AgentOptions _agent;
     private readonly AttendanceSyncService _sync;
+    private readonly ZkEmKeeperClient _zk;
 
     public AgentHttpTriggerService(
         ILogger<AgentHttpTriggerService> logger,
         IOptions<AgentOptions> agent,
-        AttendanceSyncService sync)
+        AttendanceSyncService sync,
+        ZkEmKeeperClient zk)
     {
         _logger = logger;
         _agent = agent.Value;
         _sync = sync;
+        _zk = zk;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -43,20 +46,53 @@ public sealed class AgentHttpTriggerService : BackgroundService
         }
 
         var listener = new HttpListener();
-        var prefix = $"http://127.0.0.1:{_agent.TriggerPort}/";
-        listener.Prefixes.Add(prefix);
+        var prefixes = new List<string> { $"http://127.0.0.1:{_agent.TriggerPort}/" };
+        if (_agent.ListenOnLan)
+        {
+            prefixes.Add($"http://+:{_agent.TriggerPort}/");
+        }
+
+        foreach (var prefix in prefixes)
+        {
+            listener.Prefixes.Add(prefix);
+        }
 
         try
         {
             listener.Start();
             _logger.LogInformation(
-                "Agent trigger API listening on {Prefix} (POST /sync, GET /sync/status)",
-                prefix);
+                "Agent trigger API listening on {Prefixes} (POST /sync, GET /sync/status, GET /health)",
+                string.Join(", ", prefixes));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Could not start HTTP trigger on {Prefix}. Run as admin or change Agent:TriggerPort.", prefix);
-            return;
+            if (_agent.ListenOnLan && prefixes.Count > 1)
+            {
+                _logger.LogWarning(ex, "Could not bind LAN prefix http://+:{Port}/ — retrying localhost only", _agent.TriggerPort);
+                listener = new HttpListener();
+                listener.Prefixes.Add(prefixes[0]);
+                try
+                {
+                    listener.Start();
+                    _logger.LogInformation(
+                        "Agent trigger API listening on {Prefix} only. For LAN access, run setup-agent.ps1 as Administrator.",
+                        prefixes[0]);
+                }
+                catch (Exception ex2)
+                {
+                    _logger.LogError(
+                        ex2,
+                        "Could not start HTTP trigger. Run: powershell -ExecutionPolicy Bypass -File setup-agent.ps1");
+                    return;
+                }
+            }
+            else
+            {
+                _logger.LogError(
+                    ex,
+                    "Could not start HTTP trigger. Run: powershell -ExecutionPolicy Bypass -File setup-agent.ps1");
+                return;
+            }
         }
 
         while (!stoppingToken.IsCancellationRequested)
@@ -95,7 +131,42 @@ public sealed class AgentHttpTriggerService : BackgroundService
 
         if (path.Equals("/health", StringComparison.OrdinalIgnoreCase) && ctx.Request.HttpMethod == "GET")
         {
-            await WriteJsonAsync(ctx, 200, new { ok = true, service = "Hrm.ZktAgent" }, ct);
+            var zkOk = _zk.IsZkEmKeeperAvailable();
+            await WriteJsonAsync(
+                ctx,
+                200,
+                new
+                {
+                    ok = true,
+                    service = "Hrm.ZktAgent",
+                    zkemkeeper = zkOk,
+                    hint = zkOk
+                        ? (string?)null
+                        : "Install ZKTime or ZKBio Time on this PC (registers 32-bit zkemkeeper), then restart the agent.",
+                },
+                ct);
+            return;
+        }
+
+        if (path.Equals("/devices/status", StringComparison.OrdinalIgnoreCase) && ctx.Request.HttpMethod == "GET")
+        {
+            var probes = await _sync.ProbeAllDevicesAsync(ct);
+            await WriteJsonAsync(
+                ctx,
+                200,
+                new
+                {
+                    ok = true,
+                    devices = probes.Select(p => new
+                    {
+                        id = p.Id,
+                        name = p.Name,
+                        ip = p.Ip,
+                        connected = p.Connected,
+                        message = p.Message,
+                    }),
+                },
+                ct);
             return;
         }
 

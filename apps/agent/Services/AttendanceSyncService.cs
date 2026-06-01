@@ -125,6 +125,7 @@ public sealed class AttendanceSyncService
         try
         {
             _zk.Connect(ip, _agent.DevicePort, _agent.MachineNumber, _agent.CommunicationPassword, _agent.ConnectTimeoutSeconds);
+            await _hrm.UpdateDeviceConnectStatusAsync(device.Id, true, "Connected", ct);
             _progress.AddLine("Connected — reading attendance logs from device…");
             _progress.SetPhase("read", "Reading logs from device (may take 1–2 min)…", 25, deviceSlice, deviceBase);
 
@@ -165,8 +166,8 @@ public sealed class AttendanceSyncService
             }
 
             _progress.SetPhase("map", "Matching employee PINs…", 65, deviceSlice, deviceBase);
-            var pinMap = await _hrm.GetEmployeePinsAsync(device.CompanyId, ct);
-            _progress.AddLine($"Loaded {pinMap.Count} employee PIN mapping(s) from HRM");
+            var pinMap = await _hrm.GetEmployeePinsForDeviceAsync(device.Id, device.CompanyId, ct);
+            _progress.AddLine($"Loaded {pinMap.Count} employee PIN mapping(s) for this device");
 
             var punches = new List<PunchInsert>();
             var recomputeKeys = new HashSet<(Guid EmployeeId, DateOnly Date)>();
@@ -275,6 +276,7 @@ public sealed class AttendanceSyncService
             _logger.LogError(ex, "Failed syncing {Device}", device.Name);
             try
             {
+                await _hrm.UpdateDeviceConnectStatusAsync(device.Id, false, msg, ct);
                 await _hrm.UpdateDeviceSyncStatusAsync(device.Id, msg, ct);
             }
             catch (Exception patchEx)
@@ -285,4 +287,54 @@ public sealed class AttendanceSyncService
             return $"{device.Name}: {msg}";
         }
     }
+
+    public async Task<IReadOnlyList<DeviceProbeResult>> ProbeAllDevicesAsync(CancellationToken ct = default)
+    {
+        _hrm.EnsureConfigured();
+        var devices = await _hrm.GetPullableDevicesAsync(ct);
+        var results = new List<DeviceProbeResult>();
+
+        if (!_zk.IsZkEmKeeperAvailable())
+        {
+            foreach (var d in devices)
+            {
+                results.Add(new DeviceProbeResult(d.Id, d.Name, d.IpAddress, false, "zkemkeeper not installed on agent PC"));
+            }
+            return results;
+        }
+
+        foreach (var device in devices)
+        {
+            var ip = device.IpAddress?.Trim() ?? "";
+            if (string.IsNullOrEmpty(ip))
+            {
+                results.Add(new DeviceProbeResult(device.Id, device.Name, ip, false, "No IP configured"));
+                continue;
+            }
+
+            try
+            {
+                _zk.Connect(ip, _agent.DevicePort, _agent.MachineNumber, _agent.CommunicationPassword, 8);
+                _zk.Disconnect();
+                await _hrm.UpdateDeviceConnectStatusAsync(device.Id, true, "Reachable on LAN", ct);
+                results.Add(new DeviceProbeResult(device.Id, device.Name, ip, true, null));
+            }
+            catch (Exception ex)
+            {
+                _zk.Disconnect();
+                var msg = ex.Message;
+                await _hrm.UpdateDeviceConnectStatusAsync(device.Id, false, msg, ct);
+                results.Add(new DeviceProbeResult(device.Id, device.Name, ip, false, msg));
+            }
+        }
+
+        return results;
+    }
 }
+
+public sealed record DeviceProbeResult(
+    Guid Id,
+    string Name,
+    string? Ip,
+    bool Connected,
+    string? Message);

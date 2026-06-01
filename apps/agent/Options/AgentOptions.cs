@@ -33,6 +33,12 @@ public sealed class AgentOptions
     public bool EnableHttpTrigger { get; set; } = true;
 
     public int TriggerPort { get; set; } = 17880;
+
+    /// <summary>
+    /// Also listen on all interfaces (http://+:port/) so other PCs on the LAN can use Admin → Devices.
+    /// Requires URL reservation once per PC — run-agent.ps1 registers it automatically.
+    /// </summary>
+    public bool ListenOnLan { get; set; } = true;
 }
 
 public sealed class SupabaseOptions

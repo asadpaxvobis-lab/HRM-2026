@@ -16,12 +16,16 @@ import {
 import { Link } from 'react-router-dom'
 import {
   getZktAgentUrl,
+  fetchZktAgentHealth,
+  fetchZktDeviceLanStatuses,
   pingZktAgent,
+  type ZktDeviceLanStatus,
   resetZktAgentSync,
   runZktAgentSyncWithProgress,
   setZktAgentUrl,
   type ZktSyncProgress,
 } from '@/lib/zktAgent'
+import { loadAllDevicePinRows } from '@/lib/employeeDevicePin'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
@@ -55,6 +59,8 @@ type Device = {
   last_seen_at: string | null
   agent_last_sync_at: string | null
   agent_sync_notes: string | null
+  agent_connect_ok: boolean | null
+  agent_connect_checked_at: string | null
   is_active: boolean
   notes: string | null
   branches?: { name: string } | null
@@ -68,6 +74,13 @@ type PinEmployee = {
   full_name: string
   device_pin: number | null
   branches?: { name: string } | null
+}
+
+type DevicePinRow = {
+  employee_id: string
+  device_id: string
+  device_pin: number
+  attendance_devices?: { name: string } | null
 }
 
 const DEVICE_TYPES = ['ZKTeco', 'Face Kiosk', 'Mobile', 'Manual'] as const
@@ -138,20 +151,32 @@ export function DevicesPage() {
   const [syncBusy, setSyncBusy] = useState(false)
   const [agentUrl, setAgentUrl] = useState(() => getZktAgentUrl())
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
+  const [zkSdkReady, setZkSdkReady] = useState<boolean | null>(null)
+  const [zkSdkHint, setZkSdkHint] = useState<string | null>(null)
+  const [lanStatus, setLanStatus] = useState<Record<string, ZktDeviceLanStatus>>({})
   const [zkPunchCount, setZkPunchCount] = useState<number | null>(null)
   const [syncProgress, setSyncProgress] = useState<ZktSyncProgress | null>(null)
   const [pinEmployees, setPinEmployees] = useState<PinEmployee[]>([])
+  const [devicePinRows, setDevicePinRows] = useState<DevicePinRow[]>([])
   const [lastDeviceByEmployee, setLastDeviceByEmployee] = useState<Map<string, string>>(new Map())
+
+  async function loadDevicesFromDb() {
+    const selects = [
+      'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, agent_last_sync_at, agent_sync_notes, agent_connect_ok, agent_connect_checked_at, is_active, notes, branches(name)',
+      'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, agent_last_sync_at, agent_sync_notes, is_active, notes, branches(name)',
+      'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, is_active, notes, branches(name)',
+    ]
+    let last = await supabase.from('attendance_devices').select(selects[0]).order('name')
+    for (let i = 1; i < selects.length && last.error?.message?.includes('does not exist'); i++) {
+      last = await supabase.from('attendance_devices').select(selects[i]).order('name')
+    }
+    return last
+  }
 
   async function load() {
     setLoading(true)
-    const [d, b, p, emps, punches] = await Promise.all([
-      supabase
-        .from('attendance_devices')
-        .select(
-          'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, agent_last_sync_at, agent_sync_notes, is_active, notes, branches(name)'
-        )
-        .order('name'),
+    const d = await loadDevicesFromDb()
+    const [b, p, emps, punches, edpRows] = await Promise.all([
       supabase.from('branches').select('id, name').eq('is_active', true).order('name'),
       supabase.from('attendance_punches').select('id', { count: 'exact', head: true }).eq('source', 'zkteco'),
       supabase
@@ -166,9 +191,12 @@ export function DevicesPage() {
         .not('device_id', 'is', null)
         .order('punch_at', { ascending: false })
         .limit(800),
+      loadAllDevicePinRows(appUser!.company_id),
     ])
-    if (d.error) toast.error('Failed to load devices', { description: d.error.message })
-    else {
+
+    if (d.error) {
+      toast.error('Failed to load devices', { description: d.error.message })
+    } else {
       const mapped = (d.data ?? []).map((r: Record<string, unknown>) => {
         const br = r.branches
         return { ...r, branches: Array.isArray(br) ? br[0] : br } as Device
@@ -186,6 +214,7 @@ export function DevicesPage() {
       } as PinEmployee
     })
     setPinEmployees(mappedEmps)
+    setDevicePinRows(edpRows as DevicePinRow[])
 
     const byEmp = new Map<string, string>()
     for (const row of punches.data ?? []) {
@@ -210,7 +239,19 @@ export function DevicesPage() {
   const pinByNumber = new Map(mappedWithPin.map((e) => [e.device_pin!, e]))
 
   async function checkAgent() {
-    setAgentOnline(await pingZktAgent(agentUrl))
+    const health = await fetchZktAgentHealth(agentUrl)
+    setAgentOnline(health?.ok === true)
+    setZkSdkReady(health?.zkemkeeper ?? null)
+    setZkSdkHint(health?.hint ?? null)
+    if (health?.ok) {
+      const probes = await fetchZktDeviceLanStatuses(agentUrl)
+      const map: Record<string, ZktDeviceLanStatus> = {}
+      for (const p of probes) map[p.id] = p
+      setLanStatus(map)
+      if (probes.length > 0) void load()
+    } else {
+      setLanStatus({})
+    }
   }
 
   async function resetSyncCursor() {
@@ -423,6 +464,23 @@ export function DevicesPage() {
                 <Badge variant="secondary">Not reachable</Badge>
               )}
             </span>
+            {agentOnline === false ? (
+              <p className="w-full text-xs text-muted-foreground">
+                On the office PC (same machine as ZKTime): open PowerShell in{' '}
+                <code className="text-foreground">apps\agent</code>, run{' '}
+                <code className="text-foreground">.\setup-agent.ps1</code> once, then{' '}
+                <code className="text-foreground">.\run-agent.ps1</code> and leave the window open. Use{' '}
+                <code className="text-foreground">http://127.0.0.1:17880</code> if HRM runs on that PC.
+              </p>
+            ) : null}
+            {agentOnline && zkSdkReady === false ? (
+              <p className="w-full text-xs text-amber-700 dark:text-amber-400">
+                Agent is running but ZKTime SDK is missing on this PC. Install{' '}
+                <strong>ZKTime</strong> or <strong>ZKBio Time</strong> (same app you use for attendance), restart the
+                agent, disconnect the device in ZKTime, then pull again.
+                {zkSdkHint ? <span className="block mt-1">{zkSdkHint}</span> : null}
+              </p>
+            ) : null}
             <span>
               ZKTeco punches in DB: <strong>{zkPunchCount ?? '—'}</strong>
             </span>
@@ -515,7 +573,8 @@ export function DevicesPage() {
                     <th className="px-3 py-3">IP / Serial</th>
                     <th className="px-3 py-3">Last seen</th>
                     <th className="px-3 py-3">Last LAN sync</th>
-                    <th className="px-3 py-3">Status</th>
+                    <th className="px-3 py-3">In HRM</th>
+                    <th className="px-3 py-3">On LAN</th>
                     <th className="px-3 py-3 w-32"></th>
                   </tr>
                 </thead>
@@ -565,6 +624,38 @@ export function DevicesPage() {
                           )}
                         </td>
                         <td className="px-3 py-3">
+                          {(() => {
+                            const live = lanStatus[d.id]
+                            const ok = live?.connected ?? d.agent_connect_ok
+                            const checked = live != null || d.agent_connect_checked_at != null
+                            if (!d.is_active) {
+                              return <Badge variant="secondary">—</Badge>
+                            }
+                            if (!d.ip_address) {
+                              return <Badge variant="secondary">No IP</Badge>
+                            }
+                            if (!checked) {
+                              return (
+                                <Badge variant="outline" title="Click Test agent to check connection">
+                                  Unknown
+                                </Badge>
+                              )
+                            }
+                            return ok ? (
+                              <Badge variant="warm" title={live?.message ?? 'Device reachable'}>
+                                Connected
+                              </Badge>
+                            ) : (
+                              <Badge
+                                variant="secondary"
+                                title={live?.message ?? d.agent_sync_notes ?? 'Not reachable'}
+                              >
+                                Not connected
+                              </Badge>
+                            )
+                          })()}
+                        </td>
+                        <td className="px-3 py-3">
                           {canManage && (
                             <div className="flex items-center gap-1">
                               <Button variant="ghost" size="sm" title="Edit" onClick={() => openEdit(d)}>
@@ -601,9 +692,9 @@ export function DevicesPage() {
             Device PIN mapping (ZKTeco)
           </CardTitle>
           <CardDescription>
-            Each person has one <strong>Device PIN</strong> (user ID on the machine). The same PIN works on every
-            ZKTeco device in your company. HRM records <strong>which machine</strong> each punch came from on the
-            punch itself — see Attendance or the employee profile.
+            Assign each employee to a <strong>specific device</strong> and <strong>PIN</strong> in Employees → edit
+            (ZKTeco device + user ID). The agent loads every device IP from HRM and uses the PIN map for that machine
+            only — so different branches can reuse the same PIN number on different devices.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -635,7 +726,7 @@ export function DevicesPage() {
               <p className="text-muted-foreground mt-1">
                 Device user IDs:{' '}
                 <span className="font-mono">{unmappedPins.join(', ')}</span>. In ZKTime, note the name for each ID,
-                then in HRM open that employee and set <strong>Device PIN (ZKTeco)</strong> to the same number.
+                then in HRM open that employee, pick the <strong>ZKTeco device</strong>, and set the <strong>Device PIN</strong>.
               </p>
             </div>
           )}
@@ -652,18 +743,46 @@ export function DevicesPage() {
                 <tr className="text-left">
                   <th className="px-4 py-3">Employee</th>
                   <th className="px-3 py-3">HRM code</th>
-                  <th className="px-3 py-3">Device PIN</th>
+                  <th className="px-3 py-3">Device</th>
+                  <th className="px-3 py-3">PIN</th>
                   <th className="px-3 py-3">Branch</th>
                   <th className="px-3 py-3">Last punch from device</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {mappedWithPin.length === 0 ? (
+                {devicePinRows.length === 0 && mappedWithPin.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
-                      No Device PINs configured yet. Edit employees and set the PIN to match the ZKTeco user ID.
+                    <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
+                      No device assignments yet. Edit employees → ZKTeco device + PIN.
                     </td>
                   </tr>
+                ) : devicePinRows.length > 0 ? (
+                  devicePinRows.map((row) => {
+                    const e = pinEmployees.find((p) => p.id === row.employee_id)
+                    if (!e) return null
+                    return (
+                      <tr key={`${row.device_id}-${row.employee_id}`} className="hover:bg-muted/20">
+                        <td className="px-4 py-3 font-medium">
+                          <Link to={`/employees/${e.id}`} className="text-primary hover:underline">
+                            {e.full_name}
+                          </Link>
+                        </td>
+                        <td className="px-3 py-3 font-mono text-xs">{e.employee_code}</td>
+                        <td className="px-3 py-3">{row.attendance_devices?.name ?? '—'}</td>
+                        <td className="px-3 py-3">
+                          <Badge variant="outline" className="font-mono">
+                            {row.device_pin}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">{e.branches?.name ?? '—'}</td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {lastDeviceByEmployee.get(e.id) ?? (
+                            <span className="italic">No punch imported yet</span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })
                 ) : (
                   mappedWithPin.map((e) => (
                     <tr key={e.id} className="hover:bg-muted/20">
@@ -673,6 +792,7 @@ export function DevicesPage() {
                         </Link>
                       </td>
                       <td className="px-3 py-3 font-mono text-xs">{e.employee_code}</td>
+                      <td className="px-3 py-3 text-muted-foreground italic">Any (legacy)</td>
                       <td className="px-3 py-3">
                         <Badge variant="outline" className="font-mono">
                           {e.device_pin}
