@@ -1,36 +1,38 @@
 import {
   Users,
   Building2,
-  Briefcase,
   GraduationCap,
   CalendarDays,
   CalendarRange,
-  Timer,
   Clock,
+  Timer,
+  Activity,
   FileQuestion,
-  HardDrive,
-  Wallet,
-  Receipt,
-  Coins,
   Megaphone,
   Pin,
   AlertTriangle,
-  FileText,
-  BarChart3,
-  LogOut,
-  UserSearch,
   Shield,
-  Settings as SettingsIcon,
-  ClipboardList,
-  UserCircle,
+  Fingerprint,
+  ScanFace,
+  RefreshCw,
   type LucideIcon,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/contexts/AuthContext'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { buildBiometricGaps, type BiometricGapsByDepartment } from '@/lib/biometricGaps'
+import { loadAllDevicePinRows } from '@/lib/employeeDevicePin'
+import { fetchZktBiometricStatus } from '@/lib/zktAgent'
+import {
+  countLiveAttendance,
+  type LiveAttendanceCounts,
+  type LiveAttendanceDaily,
+} from '@/lib/liveAttendance'
 
 type Stat = {
   label: string
@@ -40,102 +42,6 @@ type Stat = {
   to?: string
   perm?: string
 }
-
-type QuickAction = {
-  label: string
-  description: string
-  to: string
-  icon: LucideIcon
-  perm?: string
-  tone: 'orange' | 'blue' | 'green' | 'purple' | 'amber' | 'rose' | 'cyan' | 'slate'
-}
-
-const toneClasses: Record<QuickAction['tone'], string> = {
-  orange: 'bg-orange-500/10 text-orange-600 dark:text-orange-400',
-  blue: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
-  green: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-  purple: 'bg-purple-500/10 text-purple-600 dark:text-purple-400',
-  amber: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-  rose: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
-  cyan: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
-  slate: 'bg-slate-500/10 text-slate-600 dark:text-slate-400',
-}
-
-const quickActions: { heading: string; items: QuickAction[] }[] = [
-  {
-    heading: 'People',
-    items: [
-      { label: 'Employees', description: 'Browse, add, and edit employee records', to: '/employees', icon: Users, perm: 'employee.view', tone: 'orange' },
-      { label: 'Departments', description: 'Organize teams and units', to: '/departments', icon: Briefcase, perm: 'department.view', tone: 'blue' },
-      { label: 'Designations', description: 'Job titles and grades', to: '/designations', icon: GraduationCap, perm: 'designation.view', tone: 'purple' },
-      { label: 'Branches', description: 'Physical locations and sites', to: '/branches', icon: Building2, perm: 'branch.view', tone: 'cyan' },
-    ],
-  },
-  {
-    heading: 'Time & Attendance',
-    items: [
-      { label: 'Holidays', description: 'Calendar and branch exclusions', to: '/holidays', icon: CalendarRange, perm: 'holiday.view', tone: 'rose' },
-      { label: 'Shifts', description: 'Define work schedules', to: '/shifts', icon: Timer, perm: 'shift.view', tone: 'amber' },
-      { label: 'Bulk Shift Assign', description: 'Assign shifts in bulk', to: '/roster', icon: ClipboardList, perm: 'shift.view', tone: 'green' },
-      { label: 'Attendance', description: 'Daily attendance and punches', to: '/attendance', icon: Clock, perm: 'attendance.view', tone: 'blue' },
-      { label: 'Corrections', description: 'Approve missing punch requests', to: '/attendance/corrections', icon: FileQuestion, perm: 'attendance.view', tone: 'orange' },
-      { label: 'Overtime', description: 'OT requests, approvals, payouts', to: '/overtime', icon: Clock, perm: 'overtime.view', tone: 'purple' },
-    ],
-  },
-  {
-    heading: 'Leave',
-    items: [
-      { label: 'Leave', description: 'Apply and track requests', to: '/leave', icon: CalendarDays, perm: 'leave.view', tone: 'purple' },
-      { label: 'Leave balances', description: 'View and grant balances', to: '/leave/balances', icon: CalendarDays, perm: 'leave.view', tone: 'cyan' },
-      { label: 'Leave types', description: 'Configure policies', to: '/leave/types', icon: CalendarDays, perm: 'leave.config', tone: 'slate' },
-    ],
-  },
-  {
-    heading: 'Payroll & Finance',
-    items: [
-      { label: 'Payroll runs', description: 'Periods, payslips, releases', to: '/payroll', icon: Wallet, perm: 'payroll.view', tone: 'green' },
-      { label: 'Payroll components', description: 'Earnings, deductions, contributions', to: '/payroll/components', icon: Wallet, perm: 'payroll.config', tone: 'cyan' },
-      { label: 'Tax slabs', description: 'FBR salaried income-tax bands', to: '/payroll/tax-slabs', icon: Wallet, perm: 'payroll.view', tone: 'purple' },
-      { label: 'Expense claims', description: 'Submit and approve expenses', to: '/expenses', icon: Receipt, perm: 'expense.view', tone: 'amber' },
-      { label: 'Expense categories', description: 'Caps, GL accounts, receipt rules', to: '/expenses/categories', icon: Receipt, perm: 'expense.config', tone: 'rose' },
-      { label: 'Loans & advances', description: 'Request, approve, and track repayments', to: '/loans', icon: Coins, perm: 'loan.view', tone: 'green' },
-      { label: 'Loan types', description: 'Caps, interest, installments', to: '/loans/types', icon: Coins, perm: 'loan.approve', tone: 'blue' },
-    ],
-  },
-  {
-    heading: 'Communication',
-    items: [
-      { label: 'Announcements', description: 'Company-wide notice board', to: '/announcements', icon: Megaphone, perm: 'announcement.view', tone: 'rose' },
-      { label: 'Letters', description: 'Offer, experience, NOC, warnings', to: '/letters', icon: FileText, perm: 'letter.view', tone: 'blue' },
-      { label: 'Resignations', description: 'Exit requests, clearance, settlement', to: '/resignations', icon: LogOut, perm: 'resignation.view', tone: 'amber' },
-    ],
-  },
-  {
-    heading: 'Recruitment',
-    items: [
-      { label: 'Recruitment hub', description: 'Jobs, pipeline, interviews, hire', to: '/recruitment', icon: UserSearch, perm: 'recruitment.view', tone: 'blue' },
-      { label: 'Job postings', description: 'Open roles and requirements', to: '/recruitment/jobs', icon: Briefcase, perm: 'recruitment.view', tone: 'cyan' },
-      { label: 'Candidate pipeline', description: 'Applied → screening → interview → offer', to: '/recruitment/pipeline', icon: Users, perm: 'recruitment.view', tone: 'purple' },
-    ],
-  },
-  {
-    heading: 'Reports',
-    items: [
-      { label: 'Reports', description: 'Muster roll, salary register, statutory', to: '/reports', icon: BarChart3, perm: 'report.view', tone: 'purple' },
-    ],
-  },
-  {
-    heading: 'Administration',
-    items: [
-      { label: 'Users', description: 'System login accounts', to: '/admin/users', icon: Users, perm: 'user.view', tone: 'slate' },
-      { label: 'Roles & permissions', description: 'RBAC configuration', to: '/admin/roles', icon: Shield, perm: 'role.view', tone: 'orange' },
-      { label: 'Devices', description: 'Biometric & punch devices', to: '/admin/devices', icon: HardDrive, perm: 'attendance.view', tone: 'cyan' },
-      { label: 'Audit log', description: 'System change history', to: '/admin/audit', icon: ClipboardList, perm: 'audit.view', tone: 'green' },
-      { label: 'Settings', description: 'Company profile and preferences', to: '/admin/settings', icon: SettingsIcon, perm: 'settings.view', tone: 'amber' },
-      { label: 'My profile', description: 'Update name, password, view permissions', to: '/profile', icon: UserCircle, tone: 'blue' },
-    ],
-  },
-]
 
 export function DashboardPage() {
   const { appUser, roles, permissions, hasPermission } = useAuth()
@@ -162,6 +68,19 @@ export function DashboardPage() {
   const [announcements, setAnnouncements] = useState<
     { id: string; title: string; category: string; priority: string; pinned: boolean; published_at: string | null; unread: boolean }[]
   >([])
+  const [bioGapsByDept, setBioGapsByDept] = useState<BiometricGapsByDepartment[]>([])
+  const [bioLoading, setBioLoading] = useState(false)
+  const [bioAgentOffline, setBioAgentOffline] = useState(false)
+  const [bioScannedAt, setBioScannedAt] = useState<string | null>(null)
+  const [liveCounts, setLiveCounts] = useState<LiveAttendanceCounts>({
+    all: 0,
+    in: 0,
+    out: 0,
+    break: 0,
+    leave: 0,
+    absent: 0,
+  })
+  const [otTaken, setOtTaken] = useState({ employees: 0, hoursLabel: '0h' })
 
   const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), [])
   const in30Iso = useMemo(() => {
@@ -176,7 +95,18 @@ export function DashboardPage() {
         ? supabase.from('attendance_daily').select('status').eq('attendance_date', todayIso)
         : Promise.resolve({ data: [] as { status: string }[] })
 
-      const [emp, br, dep, desg, us, dev, hol, holList, leaveToday, pendLeave, pendCorr, dailyRows] = await Promise.all([
+      const liveAttendanceQuery = hasPermission('attendance.view')
+        ? Promise.all([
+            supabase.from('employees').select('id').eq('is_active', true),
+            supabase
+              .from('attendance_daily')
+              .select('employee_id, status, first_in, last_out, is_holiday, is_weekly_off')
+              .eq('attendance_date', todayIso),
+          ])
+        : Promise.resolve([{ data: [] as { id: string }[] }, { data: [] as Record<string, unknown>[] }] as const)
+
+      const [emp, br, dep, desg, us, dev, hol, holList, leaveToday, pendLeave, pendCorr, dailyRows, liveData] =
+        await Promise.all([
         supabase.from('employees').select('*', { count: 'exact', head: true }),
         supabase.from('branches').select('*', { count: 'exact', head: true }),
         supabase.from('departments').select('*', { count: 'exact', head: true }),
@@ -211,7 +141,58 @@ export function DashboardPage() {
           .select('*', { count: 'exact', head: true })
           .eq('status', 'PENDING'),
         attendanceDailyQuery,
+        liveAttendanceQuery,
       ])
+
+      if (hasPermission('attendance.view')) {
+        const [empRows, dailyLive] = liveData as [
+          { data: { id: string }[] | null },
+          { data: Record<string, unknown>[] | null },
+        ]
+        const dailyMap = new Map<string, Record<string, unknown>>()
+        for (const row of dailyLive.data ?? []) {
+          dailyMap.set(row.employee_id as string, row)
+        }
+        setLiveCounts(
+          countLiveAttendance(
+            (empRows.data ?? []).map((e) => e.id),
+            dailyMap as Map<string, LiveAttendanceDaily>
+          )
+        )
+      }
+
+      if (hasPermission('overtime.view')) {
+        const monthStart = `${todayIso.slice(0, 8)}01`
+        const [{ data: dailyOt }, { data: otReqs }] = await Promise.all([
+          supabase
+            .from('attendance_daily')
+            .select('employee_id, overtime_minutes')
+            .gte('attendance_date', monthStart)
+            .lte('attendance_date', todayIso)
+            .gt('overtime_minutes', 0),
+          supabase
+            .from('overtime_requests')
+            .select('employee_id, planned_hours, actual_hours')
+            .gte('ot_date', monthStart)
+            .lte('ot_date', todayIso)
+            .in('status', ['PENDING', 'APPROVED', 'PAID']),
+        ])
+        const withOt = new Set<string>()
+        let totalMinutes = 0
+        for (const d of dailyOt ?? []) {
+          withOt.add(d.employee_id as string)
+          totalMinutes += Number(d.overtime_minutes ?? 0)
+        }
+        for (const r of otReqs ?? []) {
+          withOt.add(r.employee_id as string)
+          totalMinutes += Math.round(Number(r.actual_hours ?? r.planned_hours ?? 0) * 60)
+        }
+        const hours = Math.round((totalMinutes / 60) * 10) / 10
+        setOtTaken({
+          employees: withOt.size,
+          hoursLabel: `${hours}h this month`,
+        })
+      }
 
       const daily = (dailyRows.data ?? []) as { status: string }[]
       const presentCount = daily.filter((d) => d.status === 'Present' || d.status === 'Late').length
@@ -277,6 +258,67 @@ export function DashboardPage() {
     void load().catch(() => {})
   }, [todayIso, in30Iso, appUser?.id, hasPermission])
 
+  const loadBiometricGaps = async () => {
+    if (!hasPermission('employee.view') || !hasPermission('attendance.view') || !appUser?.company_id) return
+    setBioLoading(true)
+    try {
+      const [empRes, scan] = await Promise.all([
+        supabase
+          .from('employees')
+          .select('id, employee_code, full_name, device_pin, departments(name)')
+          .eq('is_active', true)
+          .order('full_name'),
+        fetchZktBiometricStatus(),
+      ])
+      const pinRows = await loadAllDevicePinRows(appUser.company_id)
+      const employees = (empRes.data ?? []).map((r: Record<string, unknown>) => {
+        const dep = r.departments
+        const d = Array.isArray(dep) ? (dep[0] as { name: string } | null) : (dep as { name: string } | null)
+        return {
+          id: r.id as string,
+          employee_code: r.employee_code as string,
+          full_name: r.full_name as string,
+          device_pin: r.device_pin as number | null,
+          departments: d,
+        }
+      })
+      const { byDepartment, agentOffline, scannedAt } = buildBiometricGaps(
+        employees,
+        pinRows.map((p) => ({
+          employee_id: p.employee_id,
+          device_id: p.device_id,
+          device_pin: p.device_pin,
+        })),
+        scan
+      )
+      setBioGapsByDept(byDepartment)
+      setBioAgentOffline(agentOffline)
+      setBioScannedAt(scannedAt)
+    } finally {
+      setBioLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadBiometricGaps()
+  }, [appUser?.company_id, hasPermission])
+
+  const reloadLiveCounts = useCallback(async () => {
+    if (!hasPermission('attendance.view')) return
+    const [{ data: emps }, { data: daily }] = await Promise.all([
+      supabase.from('employees').select('id').eq('is_active', true),
+      supabase
+        .from('attendance_daily')
+        .select('employee_id, status, first_in, last_out, is_holiday, is_weekly_off')
+        .eq('attendance_date', todayIso),
+    ])
+    const dailyMap = new Map<string, LiveAttendanceDaily>()
+    for (const row of daily ?? []) {
+      dailyMap.set(row.employee_id as string, row as LiveAttendanceDaily)
+    }
+    setLiveCounts(countLiveAttendance((emps ?? []).map((e) => e.id), dailyMap))
+  }, [todayIso, hasPermission])
+
   const loadLivePunches = async () => {
     if (!hasPermission('attendance.view')) return
     const { data } = await supabase
@@ -311,6 +353,7 @@ export function DashboardPage() {
         { event: 'INSERT', schema: 'public', table: 'attendance_punches' },
         () => {
           void loadLivePunches()
+          void reloadLiveCounts()
         }
       )
       .on(
@@ -325,6 +368,7 @@ export function DashboardPage() {
             lateToday: daily.filter((d) => d.status === 'Late').length,
             absentToday: daily.filter((d) => d.status === 'Absent').length,
           }))
+          void reloadLiveCounts()
         }
       )
       .subscribe()
@@ -332,23 +376,69 @@ export function DashboardPage() {
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [todayIso, hasPermission])
+  }, [todayIso, hasPermission, reloadLiveCounts])
 
-  const statTiles: Stat[] = [
-    { label: 'Employees', value: stats.employees, icon: Users, hint: 'Total in system', to: '/employees', perm: 'employee.view' },
-    { label: 'Departments', value: stats.departments, icon: Briefcase, hint: 'Configured', to: '/departments', perm: 'department.view' },
+  const statTiles: Stat[] = useMemo(() => {
+    const tiles: Stat[] = []
+    if (hasPermission('attendance.view')) {
+      tiles.push({
+        label: 'Live attendance',
+        value: liveCounts.all,
+        icon: Activity,
+        hint: `${liveCounts.in} in · ${liveCounts.out} out · ${liveCounts.leave} leave · ${liveCounts.absent} absent`,
+        to: '/attendance/live',
+      })
+    } else if (hasPermission('employee.view')) {
+      tiles.push({
+        label: 'Employees',
+        value: stats.employees,
+        icon: Users,
+        hint: 'Total in system',
+        to: '/employees',
+      })
+    }
+    tiles.push(
+    {
+      label: 'Overtime',
+      value: otTaken.employees,
+      icon: Timer,
+      hint: otTaken.employees > 0 ? `${otTaken.hoursLabel} · employees with OT` : 'No OT this month',
+      to: '/overtime/taken',
+      perm: 'overtime.view',
+    },
     { label: 'Designations', value: stats.designations, icon: GraduationCap, hint: 'Job titles', to: '/designations', perm: 'designation.view' },
     { label: 'Branches', value: stats.branches, icon: Building2, hint: 'Active locations', to: '/branches', perm: 'branch.view' },
     { label: 'On leave today', value: stats.onLeaveToday, icon: CalendarDays, hint: 'Approved leave', to: '/leave', perm: 'leave.view' },
-    { label: 'Pending leave', value: stats.pendingLeave, icon: CalendarDays, hint: 'Awaiting decision', to: '/leave', perm: 'leave.approve' },
+    { label: 'Pending leave', value: stats.pendingLeave, icon: CalendarDays, hint: 'Awaiting decision', to: '/leave', perm: 'leave.view' },
     { label: 'Pending corrections', value: stats.pendingCorrections, icon: FileQuestion, hint: 'Attendance fixes', to: '/attendance/corrections', perm: 'attendance.view' },
     { label: 'Present today', value: stats.presentToday, icon: Clock, hint: 'Checked in', to: '/attendance', perm: 'attendance.view' },
     { label: 'Late today', value: stats.lateToday, icon: Clock, hint: 'After grace period', to: '/attendance', perm: 'attendance.view' },
     { label: 'Absent today', value: stats.absentToday, icon: Clock, hint: 'No punch yet', to: '/attendance', perm: 'attendance.view' },
     { label: 'Upcoming holidays', value: stats.upcomingHolidays, icon: CalendarRange, hint: 'Next 30 days', to: '/holidays', perm: 'holiday.view' },
-  ]
+    )
+    return tiles
+  }, [hasPermission, liveCounts, stats, otTaken])
 
   const visibleStats = statTiles.filter((s) => !s.perm || hasPermission(s.perm))
+
+  const missingBioCount = useMemo(
+    () => bioGapsByDept.reduce((n, d) => n + d.rows.length, 0),
+    [bioGapsByDept]
+  )
+
+  const overviewStats: Stat[] = useMemo(() => {
+    const tiles = [...visibleStats]
+    if (hasPermission('employee.view') && hasPermission('attendance.view')) {
+      tiles.push({
+        label: 'Missing biometrics',
+        value: bioLoading && bioGapsByDept.length === 0 && !bioAgentOffline ? '…' : missingBioCount,
+        icon: Fingerprint,
+        hint: bioAgentOffline ? 'Agent offline — refresh' : 'Finger / face not on device',
+        to: '#bio-gaps',
+      })
+    }
+    return tiles
+  }, [visibleStats, hasPermission, bioLoading, bioGapsByDept.length, missingBioCount, bioAgentOffline])
 
   return (
     <div className="space-y-8">
@@ -378,9 +468,11 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Stat tiles */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {visibleStats.map((s) => {
+      {/* Overview — stat tiles (matches dashboard screenshot) */}
+      <section aria-label="Overview">
+        <h3 className="sr-only">Overview</h3>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {overviewStats.map((s) => {
           const card = (
             <Card className={cn('transition-colors', s.to && 'hover:border-primary/40 hover:bg-accent/40')}>
               <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
@@ -393,6 +485,13 @@ export function DashboardPage() {
               </CardContent>
             </Card>
           )
+          if (s.to?.startsWith('#')) {
+            return (
+              <a key={s.label} href={s.to} className="block">
+                {card}
+              </a>
+            )
+          }
           return s.to ? (
             <Link key={s.label} to={s.to}>
               {card}
@@ -401,9 +500,10 @@ export function DashboardPage() {
             <div key={s.label}>{card}</div>
           )
         })}
-      </div>
+        </div>
+      </section>
 
-      {/* Live attendance feed */}
+      {/* Live attendance feed — directly under stats (matches screenshot) */}
       {hasPermission('attendance.view') && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
@@ -425,18 +525,115 @@ export function DashboardPage() {
                 {livePunches.map((p) => (
                   <div key={p.id} className="flex items-center justify-between gap-3 px-6 py-3 text-sm">
                     <div className="min-w-0">
-                      <div className="font-medium truncate">{p.name}</div>
-                      <div className="text-xs text-muted-foreground">{p.code}</div>
+                      <div className="font-semibold truncate uppercase tracking-wide">{p.name}</div>
+                      <div className="text-xs text-muted-foreground font-mono">{p.code}</div>
                     </div>
                     <div className="text-right shrink-0">
-                      <div className="tabular-nums">
-                        {new Date(p.punch_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      <div className="font-semibold tabular-nums">
+                        {new Date(p.punch_at).toLocaleTimeString(undefined, {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit',
+                        })}
                       </div>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{p.source.replace('_', ' ')}</div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {p.source.replace('_', ' ')}
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Missing fingerprint / face on device — grouped by department */}
+      {hasPermission('employee.view') && hasPermission('attendance.view') && (
+        <Card id="bio-gaps">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Fingerprint className="h-4 w-4 text-primary" />
+                Biometric enrollment gaps by department
+              </CardTitle>
+              <CardDescription>
+                Active employees with a device PIN who are missing fingerprint and/or face on their ZKTeco
+                machine. Each person is listed once.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 print:hidden"
+              disabled={bioLoading}
+              onClick={() => void loadBiometricGaps()}
+            >
+              <RefreshCw className={cn('h-4 w-4 mr-1', bioLoading && 'animate-spin')} />
+              Refresh
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {bioLoading && bioGapsByDept.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Scanning devices via agent…</p>
+            ) : bioAgentOffline ? (
+              <p className="text-sm text-muted-foreground">
+                ZKT agent is not reachable. Run the agent on the office PC (with ZKTime installed), then click
+                Refresh.
+              </p>
+            ) : bioGapsByDept.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No missing fingerprint or face enrollments found for mapped employees.
+                {bioScannedAt && (
+                  <span className="block text-xs mt-1">
+                    Last scan: {new Date(bioScannedAt).toLocaleString()}
+                  </span>
+                )}
+              </p>
+            ) : (
+              <>
+                {bioScannedAt && (
+                  <p className="text-xs text-muted-foreground">
+                    Last scan: {new Date(bioScannedAt).toLocaleString()}
+                  </p>
+                )}
+                <div className="space-y-5">
+                  {bioGapsByDept.map((dept) => (
+                    <div key={dept.department}>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <h4 className="text-sm font-semibold">{dept.department}</h4>
+                        <span className="text-xs text-muted-foreground tabular-nums">{dept.rows.length}</span>
+                      </div>
+                      <ul className="divide-y rounded-lg border text-sm">
+                        {dept.rows.map((row) => (
+                          <li key={row.employeeId} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                            <div className="min-w-0">
+                              <Link to={`/employees/${row.employeeId}`} className="font-medium hover:text-primary">
+                                {row.name}
+                              </Link>
+                              <div className="text-xs text-muted-foreground font-mono">{row.code}</div>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {row.missingFinger && (
+                                <Badge variant="outline" className="gap-1 text-amber-700 border-amber-300 dark:text-amber-300">
+                                  <Fingerprint className="h-3 w-3" />
+                                  Finger missing
+                                </Badge>
+                              )}
+                              {row.missingFace && (
+                                <Badge variant="outline" className="gap-1 text-rose-700 border-rose-300 dark:text-rose-300">
+                                  <ScanFace className="h-3 w-3" />
+                                  Face missing
+                                </Badge>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -569,49 +766,6 @@ export function DashboardPage() {
             </div>
           </CardContent>
         </Card>
-      </div>
-
-      {/* Quick actions */}
-      <div className="space-y-6">
-        <div>
-          <h3 className="text-lg font-semibold tracking-tight">Quick actions</h3>
-          <p className="text-sm text-muted-foreground">
-            Jump straight to any module. Tiles are filtered by your permissions.
-          </p>
-        </div>
-
-        {quickActions.map((section) => {
-          const items = section.items.filter((i) => !i.perm || hasPermission(i.perm))
-          if (items.length === 0) return null
-          return (
-            <div key={section.heading} className="space-y-3">
-              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {section.heading}
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-                {items.map((item) => (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    className="group rounded-xl border bg-card p-4 hover:border-primary/40 hover:bg-accent/40 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={cn('h-10 w-10 rounded-lg grid place-items-center', toneClasses[item.tone])}>
-                        <item.icon className="h-5 w-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium leading-tight truncate group-hover:text-primary">
-                          {item.label}
-                        </div>
-                        <div className="text-xs text-muted-foreground truncate">{item.description}</div>
-                      </div>
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )
-        })}
       </div>
     </div>
   )

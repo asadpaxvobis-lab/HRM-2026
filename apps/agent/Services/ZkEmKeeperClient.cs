@@ -132,6 +132,41 @@ public sealed class ZkEmKeeperClient : IDisposable
         return logs.OrderBy(l => l.PunchAt).ToList();
     }
 
+    /// <summary>Reads each enrolled user on the device and whether fingerprint / face templates exist.</summary>
+    public ZkBioScanResult ReadUserBioStatuses(int machineNumber)
+    {
+        if (_zk == null || !_connected)
+        {
+            throw new InvalidOperationException("Not connected to device.");
+        }
+
+        var results = new List<ZkUserBioStatus>();
+        var supportsFace = true;
+
+        if (!(bool)_zk.ReadAllUserID(machineNumber))
+        {
+            _logger.LogWarning("ReadAllUserID returned false; bio scan may be incomplete (error {Err})", SafeGetLastError());
+        }
+
+        var ssrCount = ReadBioStatusesSsr(machineNumber, results, ref supportsFace);
+        if (ssrCount == 0)
+        {
+            ReadBioStatusesLegacy(machineNumber, results, ref supportsFace);
+        }
+
+        var deviceSupportsFace = supportsFace;
+        if (!supportsFace)
+        {
+            for (var i = 0; i < results.Count; i++)
+            {
+                var row = results[i];
+                results[i] = row with { HasFace = true };
+            }
+        }
+
+        return new ZkBioScanResult(results.OrderBy(r => r.Pin).ToList(), deviceSupportsFace);
+    }
+
     public void Disconnect()
     {
         if (_zk == null) return;
@@ -275,5 +310,151 @@ public sealed class ZkEmKeeperClient : IDisposable
         {
             return -1;
         }
+    }
+
+    private int ReadBioStatusesSsr(int machineNumber, List<ZkUserBioStatus> results, ref bool supportsFace)
+    {
+        var seen = new HashSet<int>();
+        var count = 0;
+
+        while (true)
+        {
+            string enroll = "";
+            string name = "";
+            string password = "";
+            var privilege = 0;
+            var enabled = false;
+
+            bool rowOk;
+            try
+            {
+                rowOk = (bool)_zk!.SSR_GetAllUserInfo(
+                    machineNumber,
+                    out enroll,
+                    out name,
+                    out password,
+                    out privilege,
+                    out enabled);
+            }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+            {
+                break;
+            }
+
+            if (!rowOk) break;
+            if (!int.TryParse(enroll.Trim(), out var pin) || pin <= 0) continue;
+            if (!seen.Add(pin)) continue;
+
+            var hasFinger = HasFingerprintSsr(machineNumber, enroll);
+            var hasFace = supportsFace && HasFaceTemplate(machineNumber, enroll, ref supportsFace);
+            results.Add(new ZkUserBioStatus(pin, hasFinger, hasFace));
+            count++;
+        }
+
+        return count;
+    }
+
+    private void ReadBioStatusesLegacy(int machineNumber, List<ZkUserBioStatus> results, ref bool supportsFace)
+    {
+        var seen = new HashSet<int>();
+        while (true)
+        {
+            var pin = 0;
+            var name = "";
+            var password = "";
+            var privilege = 0;
+            var enabled = false;
+
+            bool rowOk;
+            try
+            {
+                rowOk = (bool)_zk!.GetAllUserInfo(
+                    machineNumber,
+                    ref pin,
+                    ref name,
+                    ref password,
+                    ref privilege,
+                    ref enabled);
+            }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+            {
+                break;
+            }
+
+            if (!rowOk) break;
+            if (pin <= 0 || !seen.Add(pin)) continue;
+
+            var hasFinger = HasFingerprintLegacy(machineNumber, pin);
+            var enroll = pin.ToString();
+            var hasFace = supportsFace && HasFaceTemplate(machineNumber, enroll, ref supportsFace);
+            results.Add(new ZkUserBioStatus(pin, hasFinger, hasFace));
+        }
+    }
+
+    private bool HasFingerprintSsr(int machineNumber, string enroll)
+    {
+        for (var finger = 0; finger < 10; finger++)
+        {
+            try
+            {
+                string tmp = "";
+                var len = 0;
+                if ((bool)_zk!.SSR_GetUserTmpStr(machineNumber, enroll, finger, out tmp, out len) && len > 0)
+                {
+                    return true;
+                }
+            }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+            {
+                return HasFingerprintLegacy(machineNumber, int.Parse(enroll));
+            }
+        }
+
+        return false;
+    }
+
+    private bool HasFingerprintLegacy(int machineNumber, int pin)
+    {
+        for (var finger = 0; finger < 10; finger++)
+        {
+            try
+            {
+                var tmp = new byte[0];
+                var len = 0;
+                if ((bool)_zk!.GetUserTmp(machineNumber, pin, finger, ref tmp, ref len) && len > 0)
+                {
+                    return true;
+                }
+            }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    private bool HasFaceTemplate(int machineNumber, string enroll, ref bool supportsFace)
+    {
+        foreach (var faceIndex in new[] { 0, 50 })
+        {
+            try
+            {
+                string tmp = "";
+                var len = 0;
+                if ((bool)_zk!.GetUserFaceStr(machineNumber, enroll, faceIndex, ref tmp, ref len) && len > 0)
+                {
+                    return true;
+                }
+            }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+            {
+                supportsFace = false;
+                return false;
+            }
+        }
+
+        return false;
     }
 }

@@ -134,6 +134,40 @@ export type ZktDeviceLanStatus = {
   message?: string | null
 }
 
+export type ZktBioUserStatus = {
+  pin: number
+  hasFinger: boolean
+  hasFace: boolean
+}
+
+export type ZktDeviceBiometricStatus = {
+  id: string
+  name: string
+  ip: string | null
+  scanned: boolean
+  error?: string | null
+  supportsFace: boolean
+  users: ZktBioUserStatus[]
+}
+
+export type ZktBiometricScanResponse = {
+  ok: boolean
+  scannedAt?: string
+  devices: ZktDeviceBiometricStatus[]
+}
+
+export async function fetchZktBiometricStatus(
+  agentUrl = getZktAgentUrl()
+): Promise<ZktBiometricScanResponse | null> {
+  try {
+    const res = await fetch(`${baseUrl(agentUrl)}/devices/biometric-status`)
+    if (!res.ok) return null
+    return (await res.json()) as ZktBiometricScanResponse
+  } catch {
+    return null
+  }
+}
+
 export async function fetchZktDeviceLanStatuses(
   agentUrl = getZktAgentUrl()
 ): Promise<ZktDeviceLanStatus[]> {

@@ -41,8 +41,8 @@ const reports: Report[] = [
     tone: 'blue',
   },
   {
-    label: 'Muster roll',
-    description: 'Monthly attendance grid (P / A / L / H / W) per employee per day.',
+    label: 'Monthly attendance',
+    description: 'Monthly attendance grid (P / A / L / H / W) per employee per day — filter by one person.',
     to: '/reports/muster',
     icon: CalendarDays,
     perm: 'attendance.view',

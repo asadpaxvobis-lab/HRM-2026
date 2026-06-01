@@ -170,6 +170,36 @@ public sealed class AgentHttpTriggerService : BackgroundService
             return;
         }
 
+        if (path.Equals("/devices/biometric-status", StringComparison.OrdinalIgnoreCase) && ctx.Request.HttpMethod == "GET")
+        {
+            var scans = await _sync.ScanBiometricEnrollmentsAsync(ct);
+            await WriteJsonAsync(
+                ctx,
+                200,
+                new
+                {
+                    ok = true,
+                    scannedAt = DateTimeOffset.UtcNow,
+                    devices = scans.Select(s => new
+                    {
+                        id = s.Id,
+                        name = s.Name,
+                        ip = s.Ip,
+                        scanned = s.Scanned,
+                        error = s.Error,
+                        supportsFace = s.SupportsFace,
+                        users = s.Users.Select(u => new
+                        {
+                            pin = u.Pin,
+                            hasFinger = u.HasFinger,
+                            hasFace = u.HasFace,
+                        }),
+                    }),
+                },
+                ct);
+            return;
+        }
+
         if (path.Equals("/sync/status", StringComparison.OrdinalIgnoreCase) && ctx.Request.HttpMethod == "GET")
         {
             await WriteJsonAsync(ctx, 200, _sync.GetProgress(), ct);
@@ -208,7 +238,15 @@ public sealed class AgentHttpTriggerService : BackgroundService
             return;
         }
 
-        await WriteJsonAsync(ctx, 404, new { ok = false, error = "Not found. Use POST /sync, GET /sync/status, or GET /health" }, ct);
+        await WriteJsonAsync(
+            ctx,
+            404,
+            new
+            {
+                ok = false,
+                error = "Not found. Use POST /sync, GET /sync/status, GET /devices/status, GET /devices/biometric-status, or GET /health",
+            },
+            ct);
     }
 
     private static void AddCors(HttpListenerResponse response)

@@ -288,6 +288,88 @@ public sealed class AttendanceSyncService
         }
     }
 
+    private readonly SemaphoreSlim _bioScanLock = new(1, 1);
+
+    public async Task<IReadOnlyList<DeviceBiometricScanResult>> ScanBiometricEnrollmentsAsync(CancellationToken ct = default)
+    {
+        await _bioScanLock.WaitAsync(ct);
+        try
+        {
+            _hrm.EnsureConfigured();
+            var devices = await _hrm.GetPullableDevicesAsync(ct);
+
+            if (!_zk.IsZkEmKeeperAvailable())
+            {
+                return devices.Select(d => new DeviceBiometricScanResult(
+                    d.Id,
+                    d.Name,
+                    d.IpAddress,
+                    false,
+                    "zkemkeeper not installed on agent PC",
+                    [],
+                    false)).ToList();
+            }
+
+            var results = new List<DeviceBiometricScanResult>();
+            foreach (var device in devices)
+            {
+                var ip = device.IpAddress?.Trim() ?? "";
+                if (string.IsNullOrEmpty(ip))
+                {
+                    results.Add(new DeviceBiometricScanResult(
+                        device.Id,
+                        device.Name,
+                        ip,
+                        false,
+                        "No IP configured",
+                        [],
+                        false));
+                    continue;
+                }
+
+                try
+                {
+                    _zk.Connect(
+                        ip,
+                        _agent.DevicePort,
+                        _agent.MachineNumber,
+                        _agent.CommunicationPassword,
+                        _agent.ConnectTimeoutSeconds);
+                    var scan = _zk.ReadUserBioStatuses(_agent.MachineNumber);
+                    _zk.Disconnect();
+
+                    results.Add(new DeviceBiometricScanResult(
+                        device.Id,
+                        device.Name,
+                        ip,
+                        true,
+                        null,
+                        scan.Users,
+                        scan.SupportsFace));
+                }
+                catch (Exception ex)
+                {
+                    _zk.Disconnect();
+                    _logger.LogWarning(ex, "Biometric scan failed for {Device}", device.Name);
+                    results.Add(new DeviceBiometricScanResult(
+                        device.Id,
+                        device.Name,
+                        ip,
+                        false,
+                        ex.Message,
+                        [],
+                        false));
+                }
+            }
+
+            return results;
+        }
+        finally
+        {
+            _bioScanLock.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<DeviceProbeResult>> ProbeAllDevicesAsync(CancellationToken ct = default)
     {
         _hrm.EnsureConfigured();
@@ -338,3 +420,12 @@ public sealed record DeviceProbeResult(
     string? Ip,
     bool Connected,
     string? Message);
+
+public sealed record DeviceBiometricScanResult(
+    Guid Id,
+    string Name,
+    string? Ip,
+    bool Scanned,
+    string? Error,
+    IReadOnlyList<ZkUserBioStatus> Users,
+    bool SupportsFace);

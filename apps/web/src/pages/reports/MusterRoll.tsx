@@ -29,6 +29,8 @@ type Daily = {
   overtime_minutes: number | null
 }
 
+const DOW_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'] as const
+
 const codeFor = (d: Daily | undefined): { code: string; cls: string; title: string } => {
   if (!d) return { code: '·', cls: 'text-slate-300', title: 'No record' }
   if (d.is_holiday) return { code: 'H', cls: 'bg-orange-100 text-orange-700', title: 'Holiday' }
@@ -52,6 +54,7 @@ export function MusterRollPage() {
   const [loading, setLoading] = useState(true)
   const [branchFilter, setBranchFilter] = useState('')
   const [deptFilter, setDeptFilter] = useState('')
+  const [employeeFilter, setEmployeeFilter] = useState('')
 
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const days = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => i + 1), [daysInMonth])
@@ -99,12 +102,28 @@ export function MusterRollPage() {
   const branches = useMemo(() => Array.from(new Set(employees.map((e) => e.branches?.name).filter(Boolean) as string[])).sort(), [employees])
   const departments = useMemo(() => Array.from(new Set(employees.map((e) => e.departments?.name).filter(Boolean) as string[])).sort(), [employees])
 
+  const employeesForPicker = useMemo(
+    () =>
+      employees
+        .filter(
+          (e) =>
+            (!branchFilter || e.branches?.name === branchFilter) &&
+            (!deptFilter || e.departments?.name === deptFilter)
+        )
+        .sort((a, b) => a.full_name.localeCompare(b.full_name)),
+    [employees, branchFilter, deptFilter]
+  )
+
+  useEffect(() => {
+    if (employeeFilter && !employeesForPicker.some((e) => e.id === employeeFilter)) {
+      setEmployeeFilter('')
+    }
+  }, [employeesForPicker, employeeFilter])
+
   const filteredEmps = useMemo(
     () =>
-      employees.filter(
-        (e) => (!branchFilter || e.branches?.name === branchFilter) && (!deptFilter || e.departments?.name === deptFilter)
-      ),
-    [employees, branchFilter, deptFilter]
+      employeesForPicker.filter((e) => !employeeFilter || e.id === employeeFilter),
+    [employeesForPicker, employeeFilter]
   )
 
   const rowTotals = (empId: string) => {
@@ -152,15 +171,15 @@ export function MusterRollPage() {
       ]
       lines.push(row.join(','))
     })
-    downloadCsv(`muster-roll-${monthLabel}-${year}.csv`, lines.join('\r\n'))
+    downloadCsv(`monthly-attendance-${monthLabel}-${year}.csv`, lines.join('\r\n'))
   }
 
   return (
     <div className="space-y-4">
       <ReportBackLink />
       <PageHeader
-        title="Muster roll"
-        description="Day-by-day attendance status for the selected month."
+        title="Monthly attendance"
+        description="Day-by-day attendance status for the selected month. Filter by branch, department, or one employee."
         actions={
           <>
             <Button variant="outline" size="sm" onClick={() => void load()}>
@@ -219,6 +238,17 @@ export function MusterRollPage() {
             ))}
           </Select>
         </div>
+        <div className="min-w-[220px]">
+          <Label className="text-xs">Employee</Label>
+          <Select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)}>
+            <option value="">All employees</option>
+            {employeesForPicker.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.employee_code} — {e.full_name}
+              </option>
+            ))}
+          </Select>
+        </div>
         <div className="ml-auto text-xs text-muted-foreground">
           Legend: <span className="font-mono">P</span> Present · <span className="font-mono">A</span> Absent ·{' '}
           <span className="font-mono">L</span> Leave · <span className="font-mono">H</span> Holiday ·{' '}
@@ -233,31 +263,34 @@ export function MusterRollPage() {
               <Loader2 className="h-5 w-5 animate-spin" />
             </div>
           ) : (
-            <table className="w-full text-xs report-table">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="text-left px-2 py-2 sticky left-0 bg-muted/80 z-10">Code</th>
-                  <th className="text-left px-2 py-2 sticky left-[60px] bg-muted/80 z-10">Name</th>
+            <table className="w-full text-xs report-table muster-roll-table border-collapse">
+              <thead>
+                <tr className="muster-roll-header">
+                  <th className="muster-roll-th muster-roll-th-sticky text-left pl-2 pr-3 min-w-[88px] sticky left-0 z-20">
+                    Employee Code
+                  </th>
+                  <th className="muster-roll-th muster-roll-th-sticky text-left pl-2 pr-3 min-w-[140px] sticky left-[88px] z-20">
+                    Name
+                  </th>
                   {days.map((d) => {
                     const dow = new Date(year, month, d).getDay()
                     return (
-                      <th
-                        key={d}
-                        className={
-                          'text-center px-1 py-2 ' +
-                          (dow === 0 || dow === 6 ? 'bg-slate-200/60 dark:bg-slate-700/30' : '')
-                        }
-                      >
-                        {d}
+                      <th key={d} className="muster-roll-th muster-roll-th-day">
+                        <span className="block text-[11px] font-semibold leading-tight tabular-nums">
+                          {String(d).padStart(2, '0')}
+                        </span>
+                        <span className="block text-[10px] font-medium leading-tight text-slate-600">
+                          {DOW_LETTERS[dow]}
+                        </span>
                       </th>
                     )
                   })}
-                  <th className="text-center px-2 py-2 bg-green-50 dark:bg-green-950/30">P</th>
-                  <th className="text-center px-2 py-2 bg-red-50 dark:bg-red-950/30">A</th>
-                  <th className="text-center px-2 py-2 bg-blue-50 dark:bg-blue-950/30">L</th>
-                  <th className="text-center px-2 py-2 bg-orange-50 dark:bg-orange-950/30">H</th>
-                  <th className="text-center px-2 py-2 bg-slate-100 dark:bg-slate-800/30">W</th>
-                  <th className="text-center px-2 py-2">OT</th>
+                  <th className="muster-roll-th muster-roll-th-total">P</th>
+                  <th className="muster-roll-th muster-roll-th-total">A</th>
+                  <th className="muster-roll-th muster-roll-th-total">L</th>
+                  <th className="muster-roll-th muster-roll-th-total">H</th>
+                  <th className="muster-roll-th muster-roll-th-total">W</th>
+                  <th className="muster-roll-th muster-roll-th-total border-r-0">OT</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -265,13 +298,21 @@ export function MusterRollPage() {
                   const totals = rowTotals(e.id)
                   return (
                     <tr key={e.id} className="hover:bg-muted/30">
-                      <td className="px-2 py-1.5 font-mono sticky left-0 bg-card z-[1]">{e.employee_code}</td>
-                      <td className="px-2 py-1.5 sticky left-[60px] bg-card z-[1] whitespace-nowrap">{e.full_name}</td>
+                      <td className="px-2 py-1.5 font-mono sticky left-0 bg-card z-[1] border-r border-[#9ec5de]/50">
+                        {e.employee_code}
+                      </td>
+                      <td className="px-2 py-1.5 sticky left-[88px] bg-card z-[1] whitespace-nowrap border-r border-[#9ec5de]/50">
+                        {e.full_name}
+                      </td>
                       {days.map((d) => {
                         const k = `${e.id}|${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
                         const c = codeFor(dailyMap.get(k))
                         return (
-                          <td key={d} className="px-1 py-1.5 text-center" title={c.title}>
+                          <td
+                            key={d}
+                            className="px-0.5 py-1.5 text-center border-r border-[#9ec5de]/40"
+                            title={c.title}
+                          >
                             <span className={`inline-block min-w-[18px] text-[10px] font-semibold px-1 rounded ${c.cls}`}>
                               {c.code}
                             </span>
@@ -300,7 +341,67 @@ export function MusterRollPage() {
         </CardContent>
       </Card>
 
-      <style>{printableStyles}</style>
+      <style>{`
+        ${printableStyles}
+        .muster-roll-table .muster-roll-header th {
+          background-color: #e4e4e4;
+          background-image: repeating-linear-gradient(
+            -45deg,
+            transparent,
+            transparent 3px,
+            rgba(255, 255, 255, 0.55) 3px,
+            rgba(255, 255, 255, 0.55) 6px
+          );
+          border-right: 1px solid #9ec5de;
+          color: #1e293b;
+          font-weight: 600;
+          vertical-align: middle;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+        .muster-roll-table .muster-roll-th-day {
+          min-width: 26px;
+          width: 26px;
+          padding: 4px 2px;
+          text-align: center;
+        }
+        .muster-roll-table .muster-roll-th-total {
+          min-width: 32px;
+          padding: 6px 4px;
+          text-align: center;
+        }
+        .muster-roll-table .muster-roll-th-sticky {
+          box-shadow: 2px 0 4px rgba(0, 0, 0, 0.06);
+        }
+        .dark .muster-roll-table .muster-roll-header th {
+          background-color: #3f3f46;
+          background-image: repeating-linear-gradient(
+            -45deg,
+            transparent,
+            transparent 3px,
+            rgba(255, 255, 255, 0.08) 3px,
+            rgba(255, 255, 255, 0.08) 6px
+          );
+          border-right-color: #475569;
+          color: #f1f5f9;
+        }
+        .dark .muster-roll-table .muster-roll-th-day span:last-child {
+          color: #cbd5e1;
+        }
+        @media print {
+          .muster-roll-table .muster-roll-header th {
+            background-color: #e4e4e4 !important;
+            background-image: repeating-linear-gradient(
+              -45deg,
+              transparent,
+              transparent 3px,
+              rgba(255, 255, 255, 0.55) 3px,
+              rgba(255, 255, 255, 0.55) 6px
+            ) !important;
+            border-right: 1px solid #9ec5de !important;
+          }
+        }
+      `}</style>
     </div>
   )
 }

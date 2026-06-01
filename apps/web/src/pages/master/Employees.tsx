@@ -834,14 +834,6 @@ export function EmployeesPage() {
                 </div>
               </div>
 
-              <p className="text-xs text-muted-foreground flex items-center gap-2">
-                <span
-                  aria-hidden
-                  className="inline-block h-3.5 w-3.5 shrink-0 rounded border border-amber-300/80 bg-amber-50/90 dark:border-amber-700/60 dark:bg-amber-950/30"
-                />
-                Highlighted fields are compulsory
-              </p>
-
               <div className="grid sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Employee code</Label>
@@ -855,7 +847,6 @@ export function EmployeesPage() {
                     required
                     value={form.employment_status}
                     onChange={(e) => setForm({ ...form, employment_status: e.target.value })}
-                    className={requiredInputClass}
                   >
                     {EMPLOYMENT_STATUSES.map((s) => (
                       <option key={s} value={s}>
@@ -869,7 +860,6 @@ export function EmployeesPage() {
                     required
                     value={form.branch_id}
                     onChange={(e) => setForm({ ...form, branch_id: e.target.value })}
-                    className={requiredInputClass}
                   >
                     <option value="">Select branch…</option>
                     {branches.map((b) => (
@@ -884,7 +874,6 @@ export function EmployeesPage() {
                     required
                     value={form.department_id}
                     onChange={(e) => setForm({ ...form, department_id: e.target.value })}
-                    className={requiredInputClass}
                   >
                     <option value="">Select department…</option>
                     {departments.map((d) => (
@@ -899,7 +888,6 @@ export function EmployeesPage() {
                     required
                     value={form.designation_id}
                     onChange={(e) => setForm({ ...form, designation_id: e.target.value })}
-                    className={requiredInputClass}
                   >
                     <option value="">Select designation…</option>
                     {designations.map((d) => (
@@ -915,7 +903,6 @@ export function EmployeesPage() {
                     value={form.date_of_joining}
                     onChange={(e) => setForm({ ...form, date_of_joining: e.target.value })}
                     required
-                    className={requiredInputClass}
                   />
                 </RequiredField>
                 <RequiredField label="First name">
@@ -923,7 +910,6 @@ export function EmployeesPage() {
                     value={form.first_name}
                     onChange={(e) => setForm({ ...form, first_name: e.target.value })}
                     required
-                    className={requiredInputClass}
                   />
                 </RequiredField>
                 <RequiredField label="Last name">
@@ -931,7 +917,6 @@ export function EmployeesPage() {
                     value={form.last_name}
                     onChange={(e) => setForm({ ...form, last_name: e.target.value })}
                     required
-                    className={requiredInputClass}
                   />
                 </RequiredField>
                 <RequiredField label="CNIC">
@@ -940,7 +925,6 @@ export function EmployeesPage() {
                     onChange={(e) => setForm({ ...form, cnic: e.target.value })}
                     placeholder="35201-1234567-1"
                     required
-                    className={requiredInputClass}
                   />
                 </RequiredField>
                 <div className="space-y-2">
@@ -1025,13 +1009,6 @@ export function EmployeesPage() {
                   to add compensation after onboarding.
                 </div>
               )}
-              <p className="text-xs text-muted-foreground flex items-center gap-2">
-                <span
-                  aria-hidden
-                  className="inline-block h-3.5 w-3.5 shrink-0 rounded border border-amber-300/80 bg-amber-50/90 dark:border-amber-700/60 dark:bg-amber-950/30"
-                />
-                Highlighted fields are compulsory
-              </p>
               <div className="grid sm:grid-cols-3 gap-4">
                 <RequiredField label="Effective from">
                   <Input
@@ -1040,7 +1017,6 @@ export function EmployeesPage() {
                     onChange={(e) => setComp({ ...comp, effective_from: e.target.value })}
                     disabled={!canSetSalary}
                     required
-                    className={requiredInputClass}
                   />
                 </RequiredField>
                 <RequiredField label="Pay frequency">
@@ -1049,7 +1025,6 @@ export function EmployeesPage() {
                     value={comp.pay_frequency}
                     onChange={(e) => setComp({ ...comp, pay_frequency: e.target.value })}
                     disabled={!canSetSalary}
-                    className={requiredInputClass}
                   >
                     {PAY_FREQUENCIES.map((f) => (
                       <option key={f} value={f}>
@@ -1286,11 +1261,6 @@ export function EmployeesPage() {
   )
 }
 
-const requiredFieldClass =
-  'rounded-lg border border-amber-300/80 bg-amber-50/70 p-3 shadow-sm dark:border-amber-700/50 dark:bg-amber-950/20'
-const requiredInputClass =
-  'border-amber-300/80 bg-white focus-visible:ring-amber-400/40 dark:border-amber-700/60 dark:bg-background'
-
 function RequiredField({
   label,
   children,
@@ -1303,13 +1273,11 @@ function RequiredField({
   span?: 'full'
 }) {
   return (
-    <div className={cn(requiredFieldClass, span === 'full' && 'sm:col-span-2', className)}>
-      <div className="space-y-2">
-        <Label className="text-amber-950 dark:text-amber-100">
-          {label} <span className="text-destructive font-bold">*</span>
-        </Label>
-        {children}
-      </div>
+    <div className={cn('space-y-2', span === 'full' && 'sm:col-span-2', className)}>
+      <Label>
+        {label} <span className="text-destructive">*</span>
+      </Label>
+      {children}
     </div>
   )
 }
@@ -1336,7 +1304,6 @@ function MoneyField({
       onChange={(e) => onChange(+e.target.value || 0)}
       disabled={disabled}
       required={required}
-      className={required ? requiredInputClass : undefined}
     />
   )
 

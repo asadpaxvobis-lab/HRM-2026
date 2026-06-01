@@ -20,6 +20,7 @@ import { HolidaysPage } from '@/pages/master/Holidays'
 import { ShiftsPage } from '@/pages/master/Shifts'
 import { RosterPage } from '@/pages/master/Roster'
 import { AttendancePage } from '@/pages/attendance/Attendance'
+import { LiveAttendancePage } from '@/pages/attendance/LiveAttendance'
 import { CorrectionsPage } from '@/pages/attendance/Corrections'
 import { DevicesPage } from '@/pages/admin/Devices'
 import { ProfilePage } from '@/pages/Profile'
@@ -40,6 +41,7 @@ import { LoanDetailPage } from '@/pages/loans/LoanDetail'
 import { AnnouncementsPage } from '@/pages/announcements/Announcements'
 import { AnnouncementDetailPage } from '@/pages/announcements/AnnouncementDetail'
 import { OvertimePage } from '@/pages/overtime/Overtime'
+import { OvertimeTakenPage } from '@/pages/overtime/OvertimeTaken'
 import { LettersPage } from '@/pages/letters/Letters'
 import { LetterTemplatesPage } from '@/pages/letters/Templates'
 import { LetterDetailPage } from '@/pages/letters/LetterDetail'
@@ -183,6 +185,14 @@ export default function App() {
                 }
               />
               <Route
+                path="attendance/live"
+                element={
+                  <ProtectedRoute perm="attendance.view">
+                    <LiveAttendancePage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
                 path="attendance"
                 element={
                   <ProtectedRoute perm="attendance.view">
@@ -195,6 +205,14 @@ export default function App() {
                 element={
                   <ProtectedRoute perm="attendance.view">
                     <CorrectionsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="overtime/taken"
+                element={
+                  <ProtectedRoute perm="overtime.view">
+                    <OvertimeTakenPage />
                   </ProtectedRoute>
                 }
               />
