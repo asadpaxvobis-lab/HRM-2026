@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, Briefcase } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { Plus, Pencil, RefreshCw, Loader2, Briefcase, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
-import { nextCode } from '@/lib/codegen'
+import {
+  hasDepartmentCodeIssues,
+  nextDepartmentCode,
+  STANDARD_DEPARTMENTS,
+  syncStandardDepartments,
+} from '@/lib/departmentCodes'
 import { PageHeader } from '@/components/master/PageHeader'
 import { HasPermission } from '@/components/HasPermission'
 import { Button } from '@/components/ui/button'
@@ -21,6 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { sortByMasterCode } from '@/lib/utils'
 import { toast } from 'sonner'
 
 type Dept = {
@@ -35,6 +41,8 @@ export function DepartmentsPage() {
   const { appUser, hasPermission } = useAuth()
   const canCreate = hasPermission('department.create')
   const canUpdate = hasPermission('department.update')
+  const canDelete = hasPermission('department.delete')
+  const canSync = hasPermission('department.update') || hasPermission('department.create')
   const [rows, setRows] = useState<Dept[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
@@ -42,20 +50,56 @@ export function DepartmentsPage() {
   const [form, setForm] = useState({ code: '', name: '', parent_id: '', is_active: true })
   const [busy, setBusy] = useState(false)
 
-  async function load() {
+  const load = useCallback(async () => {
+    if (!appUser?.company_id) return
     setLoading(true)
-    const { data, error } = await supabase
-      .from('departments')
-      .select('id, code, name, parent_id, is_active')
-      .order('name')
-    if (error) toast.error('Failed to load', { description: error.message })
-    else setRows((data ?? []) as Dept[])
-    setLoading(false)
-  }
+    try {
+      const { data, error } = await supabase
+        .from('departments')
+        .select('id, code, name, parent_id, is_active, created_at')
+
+      if (error) {
+        toast.error('Failed to load', { description: error.message })
+        setRows([])
+        return
+      }
+
+      let list = sortByMasterCode((data ?? []) as (Dept & { created_at?: string })[])
+
+      if (canSync) {
+        try {
+          const { created, updated } = await syncStandardDepartments(appUser.company_id)
+          const { data: refreshed, error: reloadErr } = await supabase
+            .from('departments')
+            .select('id, code, name, parent_id, is_active')
+          if (reloadErr) toast.error('Reload failed', { description: reloadErr.message })
+          else list = sortByMasterCode((refreshed ?? []) as Dept[])
+          if (created > 0 || updated > 0) {
+            toast.success('Departments applied', {
+              description: `${created} added, ${updated} updated — DEPT-001 to DEPT-${String(STANDARD_DEPARTMENTS.length).padStart(3, '0')}`,
+            })
+          }
+        } catch (syncErr) {
+          toast.error('Could not apply departments', {
+            description: syncErr instanceof Error ? syncErr.message : 'Unknown error',
+          })
+        }
+      }
+
+      setRows(list)
+    } catch (e) {
+      toast.error('Failed to load departments', {
+        description: e instanceof Error ? e.message : 'Unknown error',
+      })
+      setRows([])
+    } finally {
+      setLoading(false)
+    }
+  }, [appUser?.company_id, canSync])
 
   useEffect(() => {
     void load()
-  }, [])
+  }, [load])
 
   const parentName = (id: string | null) => rows.find((r) => r.id === id)?.name
 
@@ -94,6 +138,45 @@ export function DepartmentsPage() {
     void load()
   }
 
+  const onDelete = async (d: Dept) => {
+    const children = rows.filter((r) => r.parent_id === d.id)
+    if (children.length > 0) {
+      toast.error('Cannot delete department', {
+        description: `"${d.name}" has ${children.length} sub-department(s). Delete or move them first.`,
+      })
+      return
+    }
+
+    const { count, error: countErr } = await supabase
+      .from('employees')
+      .select('id', { count: 'exact', head: true })
+      .eq('department_id', d.id)
+    if (countErr) {
+      toast.error('Could not verify employees', { description: countErr.message })
+      return
+    }
+    if (count && count > 0) {
+      toast.error('Cannot delete department', {
+        description: `${count} employee(s) are still assigned to "${d.name}". Reassign them first.`,
+      })
+      return
+    }
+
+    if (!window.confirm(`Delete department "${d.name}" (${d.code})? This cannot be undone.`)) return
+
+    setBusy(true)
+    const { error } = await supabase.from('departments').delete().eq('id', d.id)
+    setBusy(false)
+    if (error) {
+      toast.error('Delete failed', { description: error.message })
+      return
+    }
+    await writeAuditLog({ action: 'DELETE', entityType: 'department', entityId: d.id })
+    toast.success('Department deleted')
+    if (editing?.id === d.id) setOpen(false)
+    void load()
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -104,18 +187,38 @@ export function DepartmentsPage() {
             <Button variant="outline" size="sm" onClick={() => void load()}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
+            {canSync && (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={busy || loading}
+                onClick={async () => {
+                  if (!appUser?.company_id) return
+                  setBusy(true)
+                  try {
+                    const { created, updated } = await syncStandardDepartments(appUser.company_id)
+                    toast.success('Standard departments applied', {
+                      description: `${created} added, ${updated} codes updated`,
+                    })
+                    await load()
+                  } catch (e) {
+                    toast.error('Sync failed', {
+                      description: e instanceof Error ? e.message : 'Unknown error',
+                    })
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
+              >
+                Apply DEPT-001…009
+              </Button>
+            )}
             <HasPermission perm="department.create">
               <Button
                 size="sm"
                 onClick={async () => {
                   setEditing(null)
-                  const code = await nextCode({
-                    table: 'departments',
-                    column: 'code',
-                    prefix: 'DEP-',
-                    width: 3,
-                    companyId: appUser?.company_id,
-                  })
+                  const code = await nextDepartmentCode(appUser!.company_id)
                   setForm({ code, name: '', parent_id: '', is_active: true })
                   setOpen(true)
                 }}
@@ -130,7 +233,10 @@ export function DepartmentsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">All departments</CardTitle>
-          <CardDescription>{rows.length} total</CardDescription>
+          <CardDescription>
+            {rows.length} total · standard order DEPT-001 ({STANDARD_DEPARTMENTS[0]}) … DEPT-
+            {String(STANDARD_DEPARTMENTS.length).padStart(3, '0')} ({STANDARD_DEPARTMENTS.at(-1)})
+          </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           {loading ? (
@@ -147,13 +253,7 @@ export function DepartmentsPage() {
                   className="mt-4"
                   onClick={async () => {
                     setEditing(null)
-                    const code = await nextCode({
-                      table: 'departments',
-                      column: 'code',
-                      prefix: 'DEP-',
-                      width: 3,
-                      companyId: appUser?.company_id,
-                    })
+                    const code = await nextDepartmentCode(appUser!.company_id)
                     setForm({ code, name: '', parent_id: '', is_active: true })
                     setOpen(true)
                   }}
@@ -174,24 +274,39 @@ export function DepartmentsPage() {
                     </div>
                   </div>
                   {!d.is_active && <Badge variant="secondary">Inactive</Badge>}
-                  {canUpdate && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setEditing(d)
-                        setForm({
-                          code: d.code,
-                          name: d.name,
-                          parent_id: d.parent_id ?? '',
-                          is_active: d.is_active,
-                        })
-                        setOpen(true)
-                      }}
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {canUpdate && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Edit department"
+                        onClick={() => {
+                          setEditing(d)
+                          setForm({
+                            code: d.code,
+                            name: d.name,
+                            parent_id: d.parent_id ?? '',
+                            is_active: d.is_active,
+                          })
+                          setOpen(true)
+                        }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Delete department"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        disabled={busy}
+                        onClick={() => void onDelete(d)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

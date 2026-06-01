@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, Users, Search, ChevronRight, ArrowLeft, ArrowRight, Check, Camera, X, Trash2, Save } from 'lucide-react'
+import { Plus, Pencil, RefreshCw, Loader2, Users, Search, ChevronRight, ArrowLeft, ArrowRight, Check, Camera, X, Trash2, Save, FileSpreadsheet } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
+import { findDuplicateForForm } from '@/lib/employeeDuplicateCheck'
 import { loadEmployeeDevicePin, syncEmployeeDevicePin } from '@/lib/employeeDevicePin'
 import { nextCode } from '@/lib/codegen'
 import { EMPLOYMENT_STATUSES, PAY_FREQUENCIES } from '@/lib/constants'
@@ -29,6 +30,7 @@ import { avatarColorFor, cn, initialsFromName } from '@/lib/utils'
 import { toast } from 'sonner'
 import { DocumentsTab } from '@/components/employee/DocumentsTab'
 import { DeleteEmployeeDialog } from '@/components/employee/DeleteEmployeeDialog'
+import { StaffStatusImportDialog } from '@/components/employee/StaffStatusImportDialog'
 
 type Lookup = { id: string; name?: string; title?: string; code?: string }
 
@@ -158,6 +160,7 @@ export function EmployeesPage() {
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
   const [existingPhotoUrl, setExistingPhotoUrl] = useState<string | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
 
   async function loadLookups() {
     const [b, d, des, emp, dev] = await Promise.all([
@@ -408,6 +411,21 @@ export function EmployeesPage() {
     }
 
     if (editing) {
+      const pin = form.device_pin.trim() ? parseInt(form.device_pin, 10) : null
+      const dup = await findDuplicateForForm({
+        companyId: appUser.company_id,
+        cnic: form.cnic.trim(),
+        devicePin: pin,
+        firstName: form.first_name.trim(),
+        lastName: form.last_name.trim(),
+        excludeEmployeeId: editing.id,
+      })
+      if (dup) {
+        setBusy(false)
+        toast.error('Duplicate employee', { description: dup.label })
+        return false
+      }
+
       let nextPhoto: string | null | undefined = undefined
       if (photoFile) nextPhoto = await uploadPhoto(editing.id)
       else if (existingPhotoUrl === null) nextPhoto = null // user removed photo
@@ -454,6 +472,20 @@ export function EmployeesPage() {
         return false
       }
     } else {
+      const pin = form.device_pin.trim() ? parseInt(form.device_pin, 10) : null
+      const dup = await findDuplicateForForm({
+        companyId: appUser.company_id,
+        cnic: form.cnic.trim(),
+        devicePin: pin,
+        firstName: form.first_name.trim(),
+        lastName: form.last_name.trim(),
+      })
+      if (dup) {
+        setBusy(false)
+        toast.error('Duplicate employee', { description: dup.label })
+        return false
+      }
+
       const { data, error } = await supabase.from('employees').insert(payload).select('id').single()
       if (error || !data) {
         setBusy(false)
@@ -635,6 +667,9 @@ export function EmployeesPage() {
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
             <HasPermission perm="employee.create">
+              <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                <FileSpreadsheet className="h-4 w-4" /> Import Excel
+              </Button>
               <Button size="sm" onClick={() => void openCreate()}>
                 <Plus className="h-4 w-4" /> Add employee
               </Button>
@@ -1238,6 +1273,8 @@ export function EmployeesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <StaffStatusImportDialog open={importOpen} onOpenChange={setImportOpen} onComplete={() => void load()} />
 
       <DeleteEmployeeDialog
         employee={

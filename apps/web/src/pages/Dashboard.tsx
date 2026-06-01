@@ -1,7 +1,7 @@
 import {
   Users,
   Building2,
-  GraduationCap,
+  AlarmClock,
   CalendarDays,
   CalendarRange,
   Clock,
@@ -81,6 +81,7 @@ export function DashboardPage() {
     absent: 0,
   })
   const [otTaken, setOtTaken] = useState({ employees: 0, hoursLabel: '0h' })
+  const [lateSummary, setLateSummary] = useState({ employees: 0, minutes: 0, days: 0 })
 
   const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), [])
   const in30Iso = useMemo(() => {
@@ -192,6 +193,29 @@ export function DashboardPage() {
           employees: withOt.size,
           hoursLabel: `${hours}h this month`,
         })
+      }
+
+      if (hasPermission('attendance.view')) {
+        const monthStart = `${todayIso.slice(0, 8)}01`
+        const { data: lateDaily } = await supabase
+          .from('attendance_daily')
+          .select('employee_id, late_minutes, status')
+          .gte('attendance_date', monthStart)
+          .lte('attendance_date', todayIso)
+
+        const lateEmps = new Set<string>()
+        let lateMinutes = 0
+        let lateDays = 0
+        for (const d of lateDaily ?? []) {
+          const mins = Number(d.late_minutes ?? 0)
+          const status = (d.status as string | null) ?? ''
+          if (mins > 0 || status === 'Late' || status.toLowerCase().includes('late')) {
+            lateEmps.add(d.employee_id as string)
+            lateDays += 1
+            lateMinutes += mins > 0 ? mins : 1
+          }
+        }
+        setLateSummary({ employees: lateEmps.size, minutes: lateMinutes, days: lateDays })
       }
 
       const daily = (dailyRows.data ?? []) as { status: string }[]
@@ -406,7 +430,17 @@ export function DashboardPage() {
       to: '/overtime/taken',
       perm: 'overtime.view',
     },
-    { label: 'Designations', value: stats.designations, icon: GraduationCap, hint: 'Job titles', to: '/designations', perm: 'designation.view' },
+    {
+      label: 'Late employees',
+      value: lateSummary.employees,
+      icon: AlarmClock,
+      hint:
+        lateSummary.employees > 0
+          ? `${lateSummary.days} late day(s) · ${lateSummary.minutes} min this month`
+          : 'No late arrivals this month',
+      to: '/attendance/late',
+      perm: 'attendance.view',
+    },
     { label: 'Branches', value: stats.branches, icon: Building2, hint: 'Active locations', to: '/branches', perm: 'branch.view' },
     { label: 'On leave today', value: stats.onLeaveToday, icon: CalendarDays, hint: 'Approved leave', to: '/leave', perm: 'leave.view' },
     { label: 'Pending leave', value: stats.pendingLeave, icon: CalendarDays, hint: 'Awaiting decision', to: '/leave', perm: 'leave.view' },
@@ -417,7 +451,7 @@ export function DashboardPage() {
     { label: 'Upcoming holidays', value: stats.upcomingHolidays, icon: CalendarRange, hint: 'Next 30 days', to: '/holidays', perm: 'holiday.view' },
     )
     return tiles
-  }, [hasPermission, liveCounts, stats, otTaken])
+  }, [hasPermission, liveCounts, stats, otTaken, lateSummary])
 
   const visibleStats = statTiles.filter((s) => !s.perm || hasPermission(s.perm))
 

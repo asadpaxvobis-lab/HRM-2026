@@ -5,6 +5,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** Sort master records by trailing numeric suffix (DES-001, DEPT-002, BR-003, …). */
+export function sortByMasterCode<T extends { code: string }>(rows: T[]): T[] {
+  const num = (code: string) => {
+    const m = code.match(/(\d+)\s*$/)
+    return m ? parseInt(m[1], 10) : 0
+  }
+  return [...rows].sort((a, b) => {
+    const diff = num(a.code) - num(b.code)
+    return diff !== 0 ? diff : a.code.localeCompare(b.code)
+  })
+}
+
 export function initialsFromName(name?: string | null): string {
   if (!name) return '?'
   const parts = name.trim().split(/\s+/)

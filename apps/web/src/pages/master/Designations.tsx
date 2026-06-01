@@ -20,6 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { sortByMasterCode } from '@/lib/utils'
 import { toast } from 'sonner'
 
 type Designation = {
@@ -43,9 +44,9 @@ export function DesignationsPage() {
 
   async function load() {
     setLoading(true)
-    const { data, error } = await supabase.from('designations').select('id, code, title, grade, is_active').order('title')
+    const { data, error } = await supabase.from('designations').select('id, code, title, grade, is_active')
     if (error) toast.error('Failed to load', { description: error.message })
-    else setRows((data ?? []) as Designation[])
+    else setRows(sortByMasterCode((data ?? []) as Designation[]))
     setLoading(false)
   }
 
