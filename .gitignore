@@ -58,3 +58,16 @@ supabase/.temp
 .cache/
 coverage/
 .eslintcache
+
+# ZKT Agent (secrets + local logs)
+apps/agent/appsettings.Local.json
+apps/agent/logs/
+apps/agent/agent-live.log
+apps/agent/agent-live.err
+apps/agent/test-run.log
+apps/agent/test-run.err
+
+# Local git recovery / large patches
+.git.corrupt/
+restore.patch
+ZKT/

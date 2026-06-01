@@ -77,6 +77,16 @@ dotnet run --project apps/api/Hrm.Api.csproj
 
 API runs at https://localhost:7080 by default.
 
+### 5. ZKT Agent (K40 without ADMS)
+
+A Windows worker on the same LAN as the device pulls logs via **zkemkeeper** (ZKTime SDK) and writes to Supabase.
+
+```
+dotnet run --project apps/agent/Hrm.ZktAgent.csproj
+```
+
+See [apps/agent/README.md](apps/agent/README.md). Requires .NET 8, ZKTime installed on the PC, device **IP** in Admin → Devices, and migration `0035_zkt_agent_sync.sql`.
+
 ## Security
 
 - Never commit `.env` files

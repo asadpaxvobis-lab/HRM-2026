@@ -162,6 +162,12 @@ The first thing you'll see is the change-password screen because the seeded admi
 - Full SignalR hub (.NET) instead of Supabase Realtime only
 - Edge Functions deployed: `zkteco-push` (JWT off, push-token auth) and `create-user` (admin user creation without email confirm)
 
+### Phase 3 — ZKT LAN agent (K40 without ADMS)
+- **`apps/agent/Hrm.ZktAgent`** — .NET 8 worker: `Connect_Net` → read logs → `attendance_punches` (`source: zkteco`)
+- Requires **zkemkeeper** COM (ZKTime / ZKBio on the sync PC), device **IP** in `/admin/devices`, employee **device_pin**
+- Migration **`0035_zkt_agent_sync.sql`** — `agent_last_sync_at`, dedupe index on punches
+- See **`apps/agent/README.md`**
+
 ## Profile (placeholder replaced)
 - `/profile` — name update, change password, permission summary by module
 

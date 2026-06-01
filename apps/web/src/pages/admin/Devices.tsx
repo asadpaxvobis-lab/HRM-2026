@@ -1,5 +1,27 @@
 import { useEffect, useState } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, HardDrive, Trash2, Save, Activity, Power, PowerOff } from 'lucide-react'
+import {
+  Plus,
+  Pencil,
+  RefreshCw,
+  Loader2,
+  HardDrive,
+  Trash2,
+  Save,
+  Activity,
+  Power,
+  PowerOff,
+  Download,
+  Users,
+} from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  getZktAgentUrl,
+  pingZktAgent,
+  resetZktAgentSync,
+  runZktAgentSyncWithProgress,
+  setZktAgentUrl,
+  type ZktSyncProgress,
+} from '@/lib/zktAgent'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
@@ -31,6 +53,8 @@ type Device = {
   ip_address: string | null
   push_token: string | null
   last_seen_at: string | null
+  agent_last_sync_at: string | null
+  agent_sync_notes: string | null
   is_active: boolean
   notes: string | null
   branches?: { name: string } | null
@@ -38,7 +62,33 @@ type Device = {
 
 type Branch = { id: string; name: string }
 
+type PinEmployee = {
+  id: string
+  employee_code: string
+  full_name: string
+  device_pin: number | null
+  branches?: { name: string } | null
+}
+
 const DEVICE_TYPES = ['ZKTeco', 'Face Kiosk', 'Mobile', 'Manual'] as const
+
+/** PINs on the device that are not linked to any HRM employee (from last agent sync notes). */
+function parseUnmappedPinsFromNotes(notes: string | null): number[] {
+  if (!notes) return []
+  const match = notes.match(/unmapped PINs?:\s*([\d,\s]+)/i)
+  if (!match) return []
+  return [...new Set(match[1].split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0))]
+}
+
+function collectUnmappedPins(devices: Device[]): number[] {
+  const all = new Set<number>()
+  for (const d of devices) {
+    for (const pin of parseUnmappedPinsFromNotes(d.agent_sync_notes)) {
+      all.add(pin)
+    }
+  }
+  return [...all].sort((a, b) => a - b)
+}
 
 const emptyForm = {
   name: '',
@@ -85,15 +135,37 @@ export function DevicesPage() {
   const [editing, setEditing] = useState<Device | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [busy, setBusy] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
+  const [agentUrl, setAgentUrl] = useState(() => getZktAgentUrl())
+  const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
+  const [zkPunchCount, setZkPunchCount] = useState<number | null>(null)
+  const [syncProgress, setSyncProgress] = useState<ZktSyncProgress | null>(null)
+  const [pinEmployees, setPinEmployees] = useState<PinEmployee[]>([])
+  const [lastDeviceByEmployee, setLastDeviceByEmployee] = useState<Map<string, string>>(new Map())
 
   async function load() {
     setLoading(true)
-    const [d, b] = await Promise.all([
+    const [d, b, p, emps, punches] = await Promise.all([
       supabase
         .from('attendance_devices')
-        .select('id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, is_active, notes, branches(name)')
+        .select(
+          'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, agent_last_sync_at, agent_sync_notes, is_active, notes, branches(name)'
+        )
         .order('name'),
       supabase.from('branches').select('id, name').eq('is_active', true).order('name'),
+      supabase.from('attendance_punches').select('id', { count: 'exact', head: true }).eq('source', 'zkteco'),
+      supabase
+        .from('employees')
+        .select('id, employee_code, full_name, device_pin, branches(name)')
+        .eq('is_active', true)
+        .order('full_name'),
+      supabase
+        .from('attendance_punches')
+        .select('employee_id, punch_at, attendance_devices(name)')
+        .eq('source', 'zkteco')
+        .not('device_id', 'is', null)
+        .order('punch_at', { ascending: false })
+        .limit(800),
     ])
     if (d.error) toast.error('Failed to load devices', { description: d.error.message })
     else {
@@ -104,7 +176,91 @@ export function DevicesPage() {
       setRows(mapped)
     }
     setBranches((b.data ?? []) as Branch[])
+    setZkPunchCount(p.count ?? 0)
+
+    const mappedEmps = (emps.data ?? []).map((r: Record<string, unknown>) => {
+      const br = r.branches
+      return {
+        ...r,
+        branches: Array.isArray(br) ? br[0] : br,
+      } as PinEmployee
+    })
+    setPinEmployees(mappedEmps)
+
+    const byEmp = new Map<string, string>()
+    for (const row of punches.data ?? []) {
+      const rec = row as {
+        employee_id: string
+        attendance_devices?: { name: string } | { name: string }[] | null
+      }
+      if (byEmp.has(rec.employee_id)) continue
+      const dev = rec.attendance_devices
+      const name = Array.isArray(dev) ? dev[0]?.name : dev?.name
+      if (name) byEmp.set(rec.employee_id, name)
+    }
+    setLastDeviceByEmployee(byEmp)
+
     setLoading(false)
+    void checkAgent()
+  }
+
+  const unmappedPins = collectUnmappedPins(rows)
+  const mappedWithPin = pinEmployees.filter((e) => e.device_pin != null && e.device_pin > 0)
+  const missingPin = pinEmployees.filter((e) => e.device_pin == null || e.device_pin <= 0)
+  const pinByNumber = new Map(mappedWithPin.map((e) => [e.device_pin!, e]))
+
+  async function checkAgent() {
+    setAgentOnline(await pingZktAgent(agentUrl))
+  }
+
+  async function resetSyncCursor() {
+    if (!confirm('Clear sync cursor and re-import the last 90 days from devices on the next pull?')) return
+    setSyncBusy(true)
+    try {
+      await resetZktAgentSync(agentUrl)
+      toast.success('Sync cursor reset', { description: 'Click Pull from device to re-import.' })
+    } catch (e) {
+      toast.error('Reset failed', { description: e instanceof Error ? e.message : 'Could not reach agent' })
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function pullFromDevices() {
+    setSyncBusy(true)
+    setSyncProgress(null)
+    setZktAgentUrl(agentUrl)
+    try {
+      const result = await runZktAgentSyncWithProgress(agentUrl, setSyncProgress)
+      setSyncProgress(result)
+      toast.success('Device pull finished', {
+        description: result.results?.join(' · ') ?? result.message,
+      })
+      await load()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not reach agent'
+      toast.error('Pull failed', {
+        description: `${msg}. On the office PC run: powershell -ExecutionPolicy Bypass -File run-agent.ps1 (keep window open). HRM must be on the same PC, or set Agent URL to this PC's LAN IP. Disconnect ZKTime first.`,
+      })
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  function phaseLabel(phase: string) {
+    const labels: Record<string, string> = {
+      idle: 'Idle',
+      starting: 'Starting',
+      connect: 'Connecting',
+      read: 'Reading device',
+      map: 'Mapping PINs',
+      upload: 'Uploading',
+      recompute: 'Updating attendance',
+      done: 'Done',
+      error: 'Error',
+      device: 'Device',
+    }
+    return labels[phase] ?? phase
   }
 
   useEffect(() => {
@@ -225,6 +381,109 @@ export function DevicesPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">ZKTeco LAN pull (K40 without ADMS)</CardTitle>
+          <CardDescription>
+            The web app cannot talk to the device directly. Run the Windows agent on the office PC, then use Pull
+            from device. Data is stored in <span className="font-mono text-xs">attendance_punches</span> (
+            <span className="font-mono text-xs">source = zkteco</span>).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4 border-b pb-6">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1 flex-1 min-w-[220px]">
+              <Label className="text-xs">Agent URL (office PC)</Label>
+              <Input
+                value={agentUrl}
+                onChange={(e) => setAgentUrl(e.target.value)}
+                className="font-mono text-xs"
+                placeholder="http://127.0.0.1:17880"
+              />
+            </div>
+            <Button variant="outline" size="sm" onClick={() => void checkAgent()}>
+              Test agent
+            </Button>
+            <HasPermission perm="attendance.device">
+              <Button variant="outline" size="sm" disabled={syncBusy} onClick={() => void resetSyncCursor()}>
+                Reset sync cursor
+              </Button>
+              <Button size="sm" disabled={syncBusy} onClick={() => void pullFromDevices()}>
+                {syncBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                Pull from device
+              </Button>
+            </HasPermission>
+          </div>
+          <div className="flex flex-wrap gap-4 text-sm">
+            <span>
+              Agent:{' '}
+              {agentOnline === null ? (
+                '—'
+              ) : agentOnline ? (
+                <Badge variant="warm">Running</Badge>
+              ) : (
+                <Badge variant="secondary">Not reachable</Badge>
+              )}
+            </span>
+            <span>
+              ZKTeco punches in DB: <strong>{zkPunchCount ?? '—'}</strong>
+            </span>
+            <Link to="/attendance" className="text-primary underline-offset-4 hover:underline text-sm">
+              View attendance →
+            </Link>
+          </div>
+
+          {(syncBusy || syncProgress) && (
+            <div className="rounded-lg border bg-muted/20 p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <span className="font-medium">
+                  {syncBusy && !syncProgress
+                    ? 'Starting sync…'
+                    : syncProgress?.message ?? 'Sync in progress'}
+                </span>
+                {syncProgress && (
+                  <span className="text-muted-foreground tabular-nums">{syncProgress.percent}%</span>
+                )}
+              </div>
+              <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-300 ease-out"
+                  style={{ width: `${syncProgress?.percent ?? (syncBusy ? 3 : 0)}%` }}
+                />
+              </div>
+              {syncProgress && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>Step: {phaseLabel(syncProgress.phase)}</span>
+                  {syncProgress.deviceName && <span>Device: {syncProgress.deviceName}</span>}
+                  {syncProgress.logsRead > 0 && (
+                    <span>Rows read: {syncProgress.logsRead.toLocaleString()}</span>
+                  )}
+                  {syncProgress.punchesSent > 0 && (
+                    <span>Mapped: {syncProgress.punchesSent.toLocaleString()}</span>
+                  )}
+                  {syncProgress.punchesInserted > 0 && (
+                    <span>Inserted: ~{syncProgress.punchesInserted.toLocaleString()}</span>
+                  )}
+                </div>
+              )}
+              {syncProgress && syncProgress.lines.length > 0 && (
+                <div
+                  className="max-h-36 overflow-y-auto rounded border bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground"
+                  aria-live="polite"
+                >
+                  {syncProgress.lines.map((line, i) => (
+                    <div key={`${i}-${line}`}>{line}</div>
+                  ))}
+                </div>
+              )}
+              {syncProgress?.results && syncProgress.done && (
+                <p className="text-xs text-foreground">{syncProgress.results.join(' · ')}</p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">Registered devices</CardTitle>
           <CardDescription>{rows.length} device(s)</CardDescription>
         </CardHeader>
@@ -255,6 +514,7 @@ export function DevicesPage() {
                     <th className="px-3 py-3">Branch</th>
                     <th className="px-3 py-3">IP / Serial</th>
                     <th className="px-3 py-3">Last seen</th>
+                    <th className="px-3 py-3">Last LAN sync</th>
                     <th className="px-3 py-3">Status</th>
                     <th className="px-3 py-3 w-32"></th>
                   </tr>
@@ -282,6 +542,21 @@ export function DevicesPage() {
                             <Activity className="h-3 w-3" /> {seen.label}
                           </Badge>
                         </td>
+                        <td className="px-3 py-3 text-xs max-w-[200px]">
+                          {d.agent_last_sync_at ? (
+                            <span title={d.agent_sync_notes ?? ''}>
+                              {new Date(d.agent_last_sync_at).toLocaleString('en-PK', {
+                                dateStyle: 'short',
+                                timeStyle: 'short',
+                              })}
+                              {d.agent_sync_notes && (
+                                <div className="text-muted-foreground truncate mt-0.5">{d.agent_sync_notes}</div>
+                              )}
+                            </span>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                         <td className="px-3 py-3">
                           {d.is_active ? (
                             <Badge variant="warm">Active</Badge>
@@ -307,6 +582,142 @@ export function DevicesPage() {
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Users className="h-4 w-4" />
+            Device PIN mapping (ZKTeco)
+          </CardTitle>
+          <CardDescription>
+            Each person has one <strong>Device PIN</strong> (user ID on the machine). The same PIN works on every
+            ZKTeco device in your company. HRM records <strong>which machine</strong> each punch came from on the
+            punch itself — see Attendance or the employee profile.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid sm:grid-cols-3 gap-3 text-sm">
+            <div className="rounded-lg border p-3 bg-muted/20">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">Registered devices</div>
+              <div className="text-2xl font-semibold mt-1">{rows.filter((d) => d.is_active).length}</div>
+              <div className="text-xs text-muted-foreground mt-1">Admin → Devices (this page)</div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/20">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">Employees with PIN</div>
+              <div className="text-2xl font-semibold mt-1">{mappedWithPin.length}</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                <Link to="/employees" className="text-primary underline-offset-4 hover:underline">
+                  Set PIN in Employees → edit
+                </Link>
+              </div>
+            </div>
+            <div className="rounded-lg border p-3 bg-muted/20">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide">Unmapped device PINs</div>
+              <div className="text-2xl font-semibold mt-1">{unmappedPins.length}</div>
+              <div className="text-xs text-muted-foreground mt-1">On device but no HRM employee</div>
+            </div>
+          </div>
+
+          {unmappedPins.length > 0 && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
+              <p className="font-medium text-amber-900 dark:text-amber-200">Punches not imported — no employee for these PINs</p>
+              <p className="text-muted-foreground mt-1">
+                Device user IDs:{' '}
+                <span className="font-mono">{unmappedPins.join(', ')}</span>. In ZKTime, note the name for each ID,
+                then in HRM open that employee and set <strong>Device PIN (ZKTeco)</strong> to the same number.
+              </p>
+            </div>
+          )}
+
+          {missingPin.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {missingPin.length} active employee(s) have no Device PIN yet — they will not receive ZKTeco imports.
+            </p>
+          )}
+
+          <div className="overflow-x-auto rounded-lg border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
+                <tr className="text-left">
+                  <th className="px-4 py-3">Employee</th>
+                  <th className="px-3 py-3">HRM code</th>
+                  <th className="px-3 py-3">Device PIN</th>
+                  <th className="px-3 py-3">Branch</th>
+                  <th className="px-3 py-3">Last punch from device</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {mappedWithPin.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
+                      No Device PINs configured yet. Edit employees and set the PIN to match the ZKTeco user ID.
+                    </td>
+                  </tr>
+                ) : (
+                  mappedWithPin.map((e) => (
+                    <tr key={e.id} className="hover:bg-muted/20">
+                      <td className="px-4 py-3 font-medium">
+                        <Link to={`/employees/${e.id}`} className="text-primary hover:underline">
+                          {e.full_name}
+                        </Link>
+                      </td>
+                      <td className="px-3 py-3 font-mono text-xs">{e.employee_code}</td>
+                      <td className="px-3 py-3">
+                        <Badge variant="outline" className="font-mono">
+                          {e.device_pin}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-3 text-muted-foreground">{e.branches?.name ?? '—'}</td>
+                      <td className="px-3 py-3 text-muted-foreground">
+                        {lastDeviceByEmployee.get(e.id) ?? (
+                          <span className="italic">No punch imported yet</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {unmappedPins.length > 0 && (
+            <div className="overflow-x-auto rounded-lg border">
+              <div className="px-4 py-2 text-xs font-medium uppercase text-muted-foreground bg-muted/30 border-b">
+                Device PINs with no HRM employee
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-muted/20 text-xs uppercase text-muted-foreground">
+                  <tr className="text-left">
+                    <th className="px-4 py-2">Device PIN</th>
+                    <th className="px-3 py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {unmappedPins.map((pin) => {
+                    const taken = pinByNumber.get(pin)
+                    return (
+                      <tr key={pin}>
+                        <td className="px-4 py-2 font-mono">{pin}</td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {taken ? (
+                            <span className="text-destructive">
+                              Conflict: PIN already used by {taken.full_name} ({taken.employee_code})
+                            </span>
+                          ) : (
+                            <Link to="/employees" className="text-primary hover:underline">
+                              Find employee in ZKTime → set same PIN in HRM
+                            </Link>
                           )}
                         </td>
                       </tr>

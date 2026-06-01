@@ -57,12 +57,15 @@ export function EmployeeDetailPage() {
   const [statutory, setStatutory] = useState<Statutory>(defaultStatutory())
   const [saving, setSaving] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [recentPunches, setRecentPunches] = useState<
+    { punch_at: string; punch_type: string; attendance_devices: { name: string } | null }[]
+  >([])
 
   useEffect(() => {
     if (!id) return
     void (async () => {
       setLoading(true)
-      const [emp, stat] = await Promise.all([
+      const [emp, stat, punches] = await Promise.all([
         supabase
           .from('employees')
           .select(`*, branches(name), departments(name), designations(title)`)
@@ -75,6 +78,12 @@ export function EmployeeDetailPage() {
           .order('effective_from', { ascending: false })
           .limit(1)
           .maybeSingle(),
+        supabase
+          .from('attendance_punches')
+          .select('punch_at, punch_type, attendance_devices(name)')
+          .eq('employee_id', id)
+          .order('punch_at', { ascending: false })
+          .limit(8),
       ])
       if (emp.error) {
         toast.error('Employee not found')
@@ -97,6 +106,18 @@ export function EmployeeDetailPage() {
           income_tax_enabled: s.income_tax_enabled,
         })
       }
+      setRecentPunches(
+        (punches.data ?? []).map((p) => {
+          const row = p as {
+            punch_at: string
+            punch_type: string
+            attendance_devices?: { name: string } | { name: string }[] | null
+          }
+          const dev = row.attendance_devices
+          const device = Array.isArray(dev) ? dev[0] ?? null : dev ?? null
+          return { punch_at: row.punch_at, punch_type: row.punch_type, attendance_devices: device }
+        })
+      )
       setLoading(false)
     })()
   }, [id, navigate])
@@ -223,6 +244,56 @@ export function EmployeeDetailPage() {
               <span className="text-muted-foreground">Email</span>
               <div>{String(employee.email ?? '—')}</div>
             </div>
+            <div>
+              <span className="text-muted-foreground">Device PIN (ZKTeco)</span>
+              <div className="font-mono">
+                {employee.device_pin != null && Number(employee.device_pin) > 0
+                  ? String(employee.device_pin)
+                  : '— not set'}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {tab === 'profile' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Attendance devices</CardTitle>
+            <CardDescription>
+              Punches are matched by Device PIN. The table below shows which registered machine each punch came from.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {recentPunches.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No attendance punches imported yet for this employee.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border text-sm">
+                <table className="w-full">
+                  <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
+                    <tr className="text-left">
+                      <th className="px-4 py-2">Time</th>
+                      <th className="px-3 py-2">Type</th>
+                      <th className="px-3 py-2">Device</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {recentPunches.map((p, i) => (
+                      <tr key={`${p.punch_at}-${i}`}>
+                        <td className="px-4 py-2 tabular-nums">
+                          {new Date(p.punch_at).toLocaleString('en-PK', {
+                            dateStyle: 'short',
+                            timeStyle: 'short',
+                          })}
+                        </td>
+                        <td className="px-3 py-2 capitalize text-muted-foreground">{p.punch_type}</td>
+                        <td className="px-3 py-2">{p.attendance_devices?.name ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

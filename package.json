@@ -11,7 +11,9 @@
     "dev:web": "pnpm --filter @hrm/web dev",
     "build:web": "pnpm --filter @hrm/web build",
     "dev:api": "dotnet run --project apps/api/Hrm.Api.csproj",
-    "build:api": "dotnet build apps/api/Hrm.Api.csproj"
+    "build:api": "dotnet build apps/api/Hrm.Api.csproj",
+    "dev:agent": "dotnet run --project apps/agent/Hrm.ZktAgent.csproj",
+    "build:agent": "dotnet build apps/agent/Hrm.ZktAgent.csproj"
   },
   "packageManager": "npm@10.0.0",
   "engines": {

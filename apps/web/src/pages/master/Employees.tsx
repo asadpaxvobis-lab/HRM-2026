@@ -49,6 +49,7 @@ type Employee = {
   branches?: { name: string } | null
   departments?: { name: string } | null
   designations?: { title: string } | null
+  device_pin: number | null
 }
 
 const emptyForm = {
@@ -174,7 +175,7 @@ export function EmployeesPage() {
       .from('employees')
       .select(
         `id, employee_code, first_name, last_name, full_name, email, phone, cnic, employment_status, is_active, photo_url,
-         branch_id, department_id, designation_id,
+         device_pin, branch_id, department_id, designation_id,
          branches(name), departments(name), designations(title)`
       )
       .order('employee_code')
@@ -616,6 +617,15 @@ export function EmployeesPage() {
                   <div className="text-sm text-muted-foreground">
                     {e.branches?.name ?? '—'} / {e.departments?.name ?? '—'}
                   </div>
+                  <div className="text-xs shrink-0 w-20 text-center">
+                    {e.device_pin != null && e.device_pin > 0 ? (
+                      <span className="font-mono" title="ZKTeco device user ID">
+                        PIN {e.device_pin}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/70 italic">No PIN</span>
+                    )}
+                  </div>
                   <Badge variant={e.employment_status === 'Active' ? 'success' : 'secondary'}>{e.employment_status}</Badge>
                   <div className="flex items-center gap-1 shrink-0">
                     <Button variant="ghost" size="sm" title="Open profile" onClick={() => navigate(`/employees/${e.id}`)}>
@@ -894,7 +904,10 @@ export function EmployeesPage() {
                     placeholder="Biometric user ID on device"
                     className="font-mono"
                   />
-                  <p className="text-xs text-muted-foreground">Must match the PIN enrolled on attendance devices.</p>
+                  <p className="text-xs text-muted-foreground">
+                    Same number as the user ID on every ZKTeco device (ZKTime). One PIN per employee for all office
+                    machines. Which device they used is stored on each punch — see Admin → Devices → PIN mapping.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Reports to</Label>
