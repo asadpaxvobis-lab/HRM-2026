@@ -197,7 +197,7 @@ export function DevicesPage() {
     if (d.error) {
       toast.error('Failed to load devices', { description: d.error.message })
     } else {
-      const mapped = (d.data ?? []).map((r: Record<string, unknown>) => {
+      const mapped = ((d.data ?? []) as unknown as Record<string, unknown>[]).map((r) => {
         const br = r.branches
         return { ...r, branches: Array.isArray(br) ? br[0] : br } as Device
       })

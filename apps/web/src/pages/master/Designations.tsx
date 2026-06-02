@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, GraduationCap } from 'lucide-react'
+import { Plus, Pencil, RefreshCw, Loader2, GraduationCap, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
@@ -35,6 +35,7 @@ export function DesignationsPage() {
   const { appUser, hasPermission } = useAuth()
   const canCreate = hasPermission('designation.create')
   const canUpdate = hasPermission('designation.update')
+  const canDelete = hasPermission('designation.delete')
   const [rows, setRows] = useState<Designation[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
@@ -86,6 +87,37 @@ export function DesignationsPage() {
       toast.success('Designation created')
     }
     setOpen(false)
+    void load()
+  }
+
+  const onDelete = async (d: Designation) => {
+    const { count, error: countErr } = await supabase
+      .from('employees')
+      .select('id', { count: 'exact', head: true })
+      .eq('designation_id', d.id)
+    if (countErr) {
+      toast.error('Could not verify employees', { description: countErr.message })
+      return
+    }
+    if (count && count > 0) {
+      toast.error('Cannot delete designation', {
+        description: `${count} employee(s) use "${d.title}". Reassign them first.`,
+      })
+      return
+    }
+
+    if (!window.confirm(`Delete designation "${d.title}" (${d.code})? This cannot be undone.`)) return
+
+    setBusy(true)
+    const { error } = await supabase.from('designations').delete().eq('id', d.id)
+    setBusy(false)
+    if (error) {
+      toast.error('Delete failed', { description: error.message })
+      return
+    }
+    await writeAuditLog({ action: 'DELETE', entityType: 'designation', entityId: d.id })
+    toast.success('Designation deleted')
+    if (editing?.id === d.id) setOpen(false)
     void load()
   }
 
@@ -149,19 +181,34 @@ export function DesignationsPage() {
                     </div>
                   </div>
                   {!d.is_active && <Badge variant="secondary">Inactive</Badge>}
-                  {canUpdate && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setEditing(d)
-                        setForm({ code: d.code, title: d.title, grade: d.grade ?? '', is_active: d.is_active })
-                        setOpen(true)
-                      }}
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {canUpdate && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Edit designation"
+                        onClick={() => {
+                          setEditing(d)
+                          setForm({ code: d.code, title: d.title, grade: d.grade ?? '', is_active: d.is_active })
+                          setOpen(true)
+                        }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Delete designation"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        disabled={busy}
+                        onClick={() => void onDelete(d)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

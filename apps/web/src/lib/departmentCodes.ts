@@ -65,15 +65,19 @@ export function duplicateDepartmentSuffixes(rows: { code: string }[]): number[] 
 export function hasDepartmentCodeIssues(rows: { code: string; name?: string }[]): boolean {
   if (rows.length === 0) return false
   if (duplicateDepartmentSuffixes(rows).length > 0) return true
-  return rows.some((r) => {
-    const code = r.code.trim()
-    if (/^DEP-/i.test(code) || !suffixRe.test(code)) return true
-  })
-  // Expected sequential codes for standard set
+  if (
+    rows.some((r) => {
+      const code = r.code.trim()
+      return /^DEP-/i.test(code) || !suffixRe.test(code)
+    })
+  ) {
+    return true
+  }
   if (rows.length >= STANDARD_DEPARTMENTS.length) {
     for (let i = 0; i < STANDARD_DEPARTMENTS.length; i++) {
       const expected = formatDepartmentCode(i + 1)
-      const std = normName(STANDARD_DEPARTMENTS[i])
+      const stdName = STANDARD_DEPARTMENTS[i]!
+      const std = normName(stdName)
       const row = rows.find((r) => normName(canonicalDepartmentName(r.name ?? '')) === std)
       if (!row || row.code.trim().toUpperCase() !== expected.toUpperCase()) return true
     }
