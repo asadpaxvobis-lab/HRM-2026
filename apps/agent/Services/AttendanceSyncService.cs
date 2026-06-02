@@ -14,6 +14,7 @@ public sealed class AttendanceSyncService
     private readonly ZkEmKeeperClient _zk;
     private readonly SyncStateStore _state;
     private readonly SyncProgressStore _progress;
+    private readonly AgentCycleStatusStore _cycleStatus;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
 
     public AttendanceSyncService(
@@ -22,7 +23,8 @@ public sealed class AttendanceSyncService
         SupabaseHrmClient hrm,
         ZkEmKeeperClient zk,
         SyncStateStore state,
-        SyncProgressStore progress)
+        SyncProgressStore progress,
+        AgentCycleStatusStore cycleStatus)
     {
         _logger = logger;
         _agent = agent.Value;
@@ -30,6 +32,27 @@ public sealed class AttendanceSyncService
         _zk = zk;
         _state = state;
         _progress = progress;
+        _cycleStatus = cycleStatus;
+    }
+
+    public AgentCycleSnapshot GetCycleStatus() => _cycleStatus.Snapshot();
+
+    /// <summary>Runs a sync cycle unless another sync is already in progress.</summary>
+    public async Task<IReadOnlyList<string>?> TrySyncAllDevicesAsync(CancellationToken ct = default)
+    {
+        if (!await _syncLock.WaitAsync(0, ct))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await SyncAllDevicesCoreAsync(ct);
+        }
+        finally
+        {
+            _syncLock.Release();
+        }
     }
 
     public SyncProgressSnapshot GetProgress() => _progress.Snapshot();
@@ -67,33 +90,7 @@ public sealed class AttendanceSyncService
         await _syncLock.WaitAsync(ct);
         try
         {
-            _hrm.EnsureConfigured();
-
-            var devices = await _hrm.GetPullableDevicesAsync(ct);
-            if (devices.Count == 0)
-            {
-                var msg = "No active ZKTeco devices with IP in HRM.";
-                _progress.AddLine(msg);
-                _progress.Complete(false, [msg], msg);
-                return [msg];
-            }
-
-            _progress.BeginRun(devices.Count);
-            _progress.AddLine($"Found {devices.Count} device(s) to sync");
-
-            var results = new List<string>();
-            for (var i = 0; i < devices.Count; i++)
-            {
-                results.Add(await SyncDeviceAsync(devices[i], i, devices.Count, ct));
-            }
-
-            _progress.Complete(true, results);
-            return results;
-        }
-        catch (Exception ex)
-        {
-            _progress.Complete(false, [], ex.Message);
-            throw;
+            return await SyncAllDevicesCoreAsync(ct);
         }
         finally
         {
@@ -101,11 +98,103 @@ public sealed class AttendanceSyncService
         }
     }
 
-    private async Task<string> SyncDeviceAsync(HrmDevice device, int deviceIndex, int deviceCount, CancellationToken ct)
+    private async Task<IReadOnlyList<string>> SyncAllDevicesCoreAsync(CancellationToken ct)
+    {
+        _hrm.EnsureConfigured();
+
+        var devices = await _hrm.GetPullableDevicesAsync(ct);
+        var companyId = devices.FirstOrDefault()?.CompanyId ?? Guid.Empty;
+
+        if (devices.Count == 0)
+        {
+            var msg = "No active ZKTeco devices with IP in HRM.";
+            _progress.AddLine(msg);
+            _progress.Complete(false, [msg], msg);
+            _cycleStatus.Complete([], msg);
+            if (companyId != Guid.Empty)
+            {
+                await SafeHeartbeatAsync(companyId, false, msg, 0, 0, ct);
+            }
+
+            return [msg];
+        }
+
+        _cycleStatus.SetSyncing(true, "Syncing devices…");
+        if (companyId != Guid.Empty)
+        {
+            await SafeHeartbeatAsync(companyId, true, "Syncing…", 0, devices.Count, ct);
+        }
+
+        var manualRun = _progress.Snapshot().Running;
+        if (manualRun)
+        {
+            _progress.AddLine($"Found {devices.Count} device(s) to sync");
+        }
+        else
+        {
+            _logger.LogInformation("Auto-sync {Count} device(s) (every {Seconds}s)", devices.Count, _agent.PollIntervalSeconds);
+        }
+
+        var results = new List<string>();
+        var cycleDevices = new List<DeviceCycleStatus>();
+        var online = 0;
+
+        for (var i = 0; i < devices.Count; i++)
+        {
+            var (line, status) = await SyncDeviceAsync(devices[i], i, devices.Count, ct);
+            results.Add(line);
+            cycleDevices.Add(status);
+            if (status.Connected)
+            {
+                online++;
+            }
+        }
+
+        var summary = $"{online}/{devices.Count} connected · " + string.Join(" · ", results);
+        _cycleStatus.Complete(cycleDevices, summary);
+
+        if (companyId != Guid.Empty)
+        {
+            await SafeHeartbeatAsync(companyId, false, summary, online, devices.Count, ct);
+        }
+
+        if (manualRun)
+        {
+            _progress.Complete(true, results);
+        }
+
+        return results;
+    }
+
+    private async Task SafeHeartbeatAsync(
+        Guid companyId,
+        bool syncing,
+        string? summary,
+        int online,
+        int total,
+        CancellationToken ct)
+    {
+        try
+        {
+            await _hrm.UpsertAgentHeartbeatAsync(companyId, syncing, summary, online, total, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not write agent heartbeat (apply migration 0038)");
+        }
+    }
+
+    private async Task<(string Line, DeviceCycleStatus Status)> SyncDeviceAsync(
+        HrmDevice device,
+        int deviceIndex,
+        int deviceCount,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(device.IpAddress))
         {
-            return $"{device.Name}: no IP configured";
+            const string msg = "No IP configured";
+            await SafeLanStatusAsync(device.Id, false, msg, ct);
+            return ($"{device.Name}: {msg}", new DeviceCycleStatus(device.Id, device.Name, null, false, msg));
         }
 
         var ip = device.IpAddress.Trim();
@@ -124,8 +213,9 @@ public sealed class AttendanceSyncService
 
         try
         {
+            await SafeLanStatusAsync(device.Id, false, $"Connecting to {ip}…", ct);
             _zk.Connect(ip, _agent.DevicePort, _agent.MachineNumber, _agent.CommunicationPassword, _agent.ConnectTimeoutSeconds);
-            await _hrm.UpdateDeviceConnectStatusAsync(device.Id, true, "Connected", ct);
+            await SafeLanStatusAsync(device.Id, true, "Connected — reading punches from device…", ct);
             _progress.AddLine("Connected — reading attendance logs from device…");
             _progress.SetPhase("read", "Reading logs from device (may take 1–2 min)…", 25, deviceSlice, deviceBase);
 
@@ -143,7 +233,6 @@ public sealed class AttendanceSyncService
                     }
                 });
 
-            _zk.Disconnect();
             _progress.SetCounts(logs.Count, 0);
             _progress.AddLine($"Device buffer: {logs.Count:N0} log(s) in date range");
 
@@ -152,11 +241,14 @@ public sealed class AttendanceSyncService
                 var noNewMsg =
                     $"OK — no punches newer than {since:yyyy-MM-dd HH:mm} UTC. " +
                     "If you expected data: map employee Device PINs in HRM, or use Reset sync cursor and pull again.";
+                await SafeLanStatusAsync(device.Id, true, "Connected — no new punches", ct);
                 await _hrm.UpdateDeviceSyncStatusAsync(device.Id, noNewMsg, ct);
                 _state.Save(device.Id, localState);
                 _progress.AddLine(noNewMsg);
                 _progress.SetPhase("done", "No new punches in date range", 100, deviceSlice, deviceBase);
-                return $"{device.Name}: {noNewMsg}";
+                return (
+                    $"{device.Name}: {noNewMsg}",
+                    new DeviceCycleStatus(device.Id, device.Name, ip, true, "Connected — no new punches"));
             }
 
             if (logs.Count > _agent.MaxPunchesPerSync)
@@ -241,6 +333,7 @@ public sealed class AttendanceSyncService
                 note += $"; unmapped PINs: {string.Join(", ", unmapped.OrderBy(x => x))}";
             }
 
+            await SafeLanStatusAsync(device.Id, true, "Connected", ct);
             await _hrm.UpdateDeviceSyncStatusAsync(device.Id, note, ct);
 
             // Do not skip past unmapped punches — retry them after Device PINs are set in HRM.
@@ -266,17 +359,21 @@ public sealed class AttendanceSyncService
             _progress.SetPhase("done", note, 100, deviceSlice, deviceBase);
             _progress.AddLine($"{device.Name}: {note}");
             _logger.LogInformation("{Device}: {Note}", device.Name, note);
-            return $"{device.Name}: {note}";
+            return (
+                $"{device.Name}: {note}",
+                new DeviceCycleStatus(device.Id, device.Name, ip, true, "Connected"));
         }
         catch (Exception ex)
         {
             _zk.Disconnect();
-            var msg = $"Error: {ex.Message}";
+            var detail = ZkEmKeeperClient.FriendlyError(ex);
+            var lanMsg = $"Not connected — {detail}";
+            var msg = $"Error: {detail}";
             _progress.AddLine(msg);
             _logger.LogError(ex, "Failed syncing {Device}", device.Name);
             try
             {
-                await _hrm.UpdateDeviceConnectStatusAsync(device.Id, false, msg, ct);
+                await SafeLanStatusAsync(device.Id, false, lanMsg, ct);
                 await _hrm.UpdateDeviceSyncStatusAsync(device.Id, msg, ct);
             }
             catch (Exception patchEx)
@@ -284,15 +381,39 @@ public sealed class AttendanceSyncService
                 _logger.LogWarning(patchEx, "Could not write device sync status");
             }
 
-            return $"{device.Name}: {msg}";
+            return ($"{device.Name}: {msg}", new DeviceCycleStatus(device.Id, device.Name, ip, false, lanMsg));
         }
     }
 
-    private readonly SemaphoreSlim _bioScanLock = new(1, 1);
+    private async Task SafeLanStatusAsync(Guid deviceId, bool connected, string message, CancellationToken ct)
+    {
+        try
+        {
+            await _hrm.UpdateDeviceLanStatusAsync(deviceId, connected, message, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not update LAN status for {DeviceId}", deviceId);
+        }
+    }
 
     public async Task<IReadOnlyList<DeviceBiometricScanResult>> ScanBiometricEnrollmentsAsync(CancellationToken ct = default)
     {
-        await _bioScanLock.WaitAsync(ct);
+        if (!await _syncLock.WaitAsync(0, ct))
+        {
+            return
+            [
+                new DeviceBiometricScanResult(
+                    Guid.Empty,
+                    "—",
+                    null,
+                    false,
+                    "Attendance sync is running — try again when pull finishes.",
+                    [],
+                    false),
+            ];
+        }
+
         try
         {
             _hrm.EnsureConfigured();
@@ -356,7 +477,7 @@ public sealed class AttendanceSyncService
                         device.Name,
                         ip,
                         false,
-                        ex.Message,
+                        ZkEmKeeperClient.FriendlyError(ex),
                         [],
                         false));
                 }
@@ -366,7 +487,7 @@ public sealed class AttendanceSyncService
         }
         finally
         {
-            _bioScanLock.Release();
+            _syncLock.Release();
         }
     }
 
@@ -376,41 +497,64 @@ public sealed class AttendanceSyncService
         var devices = await _hrm.GetPullableDevicesAsync(ct);
         var results = new List<DeviceProbeResult>();
 
-        if (!_zk.IsZkEmKeeperAvailable())
+        if (!await _syncLock.WaitAsync(0, ct))
         {
             foreach (var d in devices)
             {
-                results.Add(new DeviceProbeResult(d.Id, d.Name, d.IpAddress, false, "zkemkeeper not installed on agent PC"));
+                results.Add(new DeviceProbeResult(
+                    d.Id,
+                    d.Name,
+                    d.IpAddress,
+                    false,
+                    "Sync in progress — LAN probe skipped"));
             }
+
             return results;
         }
 
-        foreach (var device in devices)
+        try
         {
-            var ip = device.IpAddress?.Trim() ?? "";
-            if (string.IsNullOrEmpty(ip))
+            if (!_zk.IsZkEmKeeperAvailable())
             {
-                results.Add(new DeviceProbeResult(device.Id, device.Name, ip, false, "No IP configured"));
-                continue;
+                foreach (var d in devices)
+                {
+                    results.Add(new DeviceProbeResult(d.Id, d.Name, d.IpAddress, false, "zkemkeeper not installed on agent PC"));
+                }
+
+                return results;
             }
 
-            try
+            foreach (var device in devices)
             {
-                _zk.Connect(ip, _agent.DevicePort, _agent.MachineNumber, _agent.CommunicationPassword, 8);
-                _zk.Disconnect();
-                await _hrm.UpdateDeviceConnectStatusAsync(device.Id, true, "Reachable on LAN", ct);
-                results.Add(new DeviceProbeResult(device.Id, device.Name, ip, true, null));
+                var ip = device.IpAddress?.Trim() ?? "";
+                if (string.IsNullOrEmpty(ip))
+                {
+                    results.Add(new DeviceProbeResult(device.Id, device.Name, ip, false, "No IP configured"));
+                    continue;
+                }
+
+                try
+                {
+                    _zk.Connect(ip, _agent.DevicePort, _agent.MachineNumber, _agent.CommunicationPassword, 8);
+                    _zk.Disconnect();
+                    await _hrm.UpdateDeviceConnectStatusAsync(device.Id, true, "Reachable on LAN", ct);
+                    results.Add(new DeviceProbeResult(device.Id, device.Name, ip, true, null));
+                }
+                catch (Exception ex)
+                {
+                    _zk.Disconnect();
+                    var msg = ZkEmKeeperClient.FriendlyError(ex);
+                    await _hrm.UpdateDeviceConnectStatusAsync(device.Id, false, msg, ct);
+                    results.Add(new DeviceProbeResult(device.Id, device.Name, ip, false, msg));
+                }
             }
-            catch (Exception ex)
-            {
-                _zk.Disconnect();
-                var msg = ex.Message;
-                await _hrm.UpdateDeviceConnectStatusAsync(device.Id, false, msg, ct);
-                results.Add(new DeviceProbeResult(device.Id, device.Name, ip, false, msg));
-            }
+
+            return results;
         }
-
-        return results;
+        finally
+        {
+            _syncLock.Release();
+        }
     }
 }
 

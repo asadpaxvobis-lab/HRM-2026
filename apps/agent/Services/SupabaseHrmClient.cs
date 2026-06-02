@@ -206,7 +206,81 @@ public sealed class SupabaseHrmClient
         res.EnsureSuccessStatusCode();
     }
 
-    public async Task UpdateDeviceConnectStatusAsync(Guid deviceId, bool connected, string? notes, CancellationToken ct)
+    public async Task UpdateDeviceLanStatusAsync(
+        Guid deviceId,
+        bool connected,
+        string message,
+        CancellationToken ct)
+    {
+        var url = $"{BaseUrl()}/rest/v1/attendance_devices?id=eq.{deviceId}";
+        var body = new Dictionary<string, object?>
+        {
+            ["agent_connect_ok"] = connected,
+            ["agent_connect_checked_at"] = DateTimeOffset.UtcNow,
+            ["agent_lan_message"] = message,
+        };
+        if (connected)
+        {
+            body["last_seen_at"] = DateTimeOffset.UtcNow;
+        }
+
+        if (await PatchDeviceAsync(url, body, ct))
+        {
+            return;
+        }
+
+        // Without agent_lan_message column — still update connect flags
+        var fallback = new Dictionary<string, object?>
+        {
+            ["agent_connect_ok"] = connected,
+            ["agent_connect_checked_at"] = DateTimeOffset.UtcNow,
+        };
+        if (connected)
+        {
+            fallback["last_seen_at"] = DateTimeOffset.UtcNow;
+        }
+
+        await PatchDeviceAsync(url, fallback, ct);
+    }
+
+    public async Task UpsertAgentHeartbeatAsync(
+        Guid companyId,
+        bool isSyncing,
+        string? cycleSummary,
+        int devicesOnline,
+        int devicesTotal,
+        CancellationToken ct)
+    {
+        var url = $"{BaseUrl()}/rest/v1/zkt_agent_heartbeat?on_conflict=company_id";
+        var payload = JsonSerializer.Serialize(new
+        {
+            company_id = companyId,
+            last_seen_at = DateTimeOffset.UtcNow,
+            host_name = Environment.MachineName,
+            is_syncing = isSyncing,
+            cycle_summary = cycleSummary,
+            devices_online = devicesOnline,
+            devices_total = devicesTotal,
+            updated_at = DateTimeOffset.UtcNow,
+        }, JsonOpts);
+
+        using var req = CreateRequest(HttpMethod.Post, url);
+        req.Headers.TryAddWithoutValidation("Prefer", "resolution=merge-duplicates");
+        req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var res = await _http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            _logger.LogDebug("Agent heartbeat upsert skipped ({Status}): {Body}", res.StatusCode, body);
+        }
+    }
+
+    public async Task UpdateDeviceConnectStatusAsync(
+        Guid deviceId,
+        bool connected,
+        string? notes,
+        CancellationToken ct,
+        bool writeSyncNotes = false)
     {
         var url = $"{BaseUrl()}/rest/v1/attendance_devices?id=eq.{deviceId}";
         var body = new Dictionary<string, object?>
@@ -218,7 +292,8 @@ public sealed class SupabaseHrmClient
         {
             body["last_seen_at"] = DateTimeOffset.UtcNow;
         }
-        if (!string.IsNullOrWhiteSpace(notes))
+        // LAN probes must not overwrite last sync error text in agent_sync_notes.
+        if (writeSyncNotes && !string.IsNullOrWhiteSpace(notes))
         {
             body["agent_sync_notes"] = notes;
         }

@@ -35,20 +35,25 @@ public sealed class AttendanceSyncWorker : BackgroundService
             return;
         }
 
-        _logger.LogInformation("HRM ZKT Agent started. Poll every {Seconds}s.", _agent.PollIntervalSeconds);
+        var interval = Math.Max(10, _agent.PollIntervalSeconds);
+        _logger.LogInformation("HRM ZKT Agent started. Auto-sync every {Seconds}s.", interval);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await _sync.SyncAllDevicesAsync(stoppingToken);
+                var results = await _sync.TrySyncAllDevicesAsync(stoppingToken);
+                if (results == null)
+                {
+                    _logger.LogDebug("Auto-sync skipped — manual pull still running");
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Sync cycle failed");
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(Math.Max(30, _agent.PollIntervalSeconds)), stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(interval), stoppingToken);
         }
     }
 }

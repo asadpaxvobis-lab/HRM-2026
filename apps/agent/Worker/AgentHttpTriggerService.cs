@@ -129,6 +129,33 @@ public sealed class AgentHttpTriggerService : BackgroundService
 
         var path = ctx.Request.Url?.AbsolutePath.TrimEnd('/') ?? "";
 
+        if (path.Equals("/status", StringComparison.OrdinalIgnoreCase) && ctx.Request.HttpMethod == "GET")
+        {
+            var cycle = _sync.GetCycleStatus();
+            var progress = _sync.GetProgress();
+            await WriteJsonAsync(
+                ctx,
+                200,
+                new
+                {
+                    ok = true,
+                    syncing = cycle.Syncing || progress.Running,
+                    pollIntervalSeconds = _agent.PollIntervalSeconds,
+                    lastCycleAt = cycle.CompletedAt == DateTimeOffset.MinValue ? (DateTimeOffset?)null : cycle.CompletedAt,
+                    summary = cycle.Summary,
+                    devices = cycle.Devices.Select(d => new
+                    {
+                        id = d.Id,
+                        name = d.Name,
+                        ip = d.Ip,
+                        connected = d.Connected,
+                        message = d.Message,
+                    }),
+                },
+                ct);
+            return;
+        }
+
         if (path.Equals("/health", StringComparison.OrdinalIgnoreCase) && ctx.Request.HttpMethod == "GET")
         {
             var zkOk = _zk.IsZkEmKeeperAvailable();

@@ -21,6 +21,7 @@ try
     builder.Services.AddSingleton<ZkEmKeeperClient>();
     builder.Services.AddSingleton<SyncStateStore>();
     builder.Services.AddSingleton<SyncProgressStore>();
+    builder.Services.AddSingleton<AgentCycleStatusStore>();
     builder.Services.AddSingleton<AttendanceSyncService>();
     builder.Services.AddHostedService<AttendanceSyncWorker>();
     builder.Services.AddHostedService<AgentHttpTriggerService>();

@@ -8,8 +8,8 @@ import { Label } from '@/components/ui/label'
 import { toast } from 'sonner'
 
 export function LoginPage() {
-  const [email, setEmail] = useState('admin@hrm.com')
-  const [password, setPassword] = useState('admin123')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [showPwd, setShowPwd] = useState(false)
   const [busy, setBusy] = useState(false)
   const { signIn } = useAuth()
@@ -51,13 +51,13 @@ export function LoginPage() {
             </p>
           </div>
 
-          <form onSubmit={onSubmit} className="space-y-4">
+          <form onSubmit={onSubmit} className="space-y-4" autoComplete="off">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <Input
                 id="email"
                 type="email"
-                autoComplete="email"
+                autoComplete="off"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -70,7 +70,7 @@ export function LoginPage() {
                 <Input
                   id="password"
                   type={showPwd ? 'text' : 'password'}
-                  autoComplete="current-password"
+                  autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required

@@ -4,8 +4,8 @@ public sealed class AgentOptions
 {
     public const string SectionName = "Agent";
 
-    /// <summary>Poll interval when syncing all devices from Supabase.</summary>
-    public int PollIntervalSeconds { get; set; } = 120;
+    /// <summary>How often the agent pulls new punches from all ZKTeco devices (minimum 10).</summary>
+    public int PollIntervalSeconds { get; set; } = 10;
 
     public int DevicePort { get; set; } = 4370;
 

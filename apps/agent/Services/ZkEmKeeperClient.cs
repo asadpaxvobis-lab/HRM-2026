@@ -21,10 +21,24 @@ public sealed class ZkEmKeeperClient : IDisposable
     ];
 
     private readonly ILogger<ZkEmKeeperClient> _logger;
+    private readonly object _gate = new();
     private dynamic? _zk;
     private bool _connected;
+    private string? _connectedIp;
 
     public ZkEmKeeperClient(ILogger<ZkEmKeeperClient> logger) => _logger = logger;
+
+    public string? ConnectedIp => _connectedIp;
+
+    internal static string FriendlyError(Exception ex)
+    {
+        if (ex is AggregateException agg && agg.InnerException != null)
+        {
+            return FriendlyError(agg.InnerException);
+        }
+
+        return ex.Message;
+    }
 
     public bool IsZkEmKeeperAvailable()
     {
@@ -38,20 +52,36 @@ public sealed class ZkEmKeeperClient : IDisposable
 
     public void Connect(string ip, int port, int machineNumber, int commPassword, int timeoutSeconds = 12)
     {
-        var connectTask = Task.Run(() => ConnectCore(ip, port, machineNumber, commPassword));
-        if (!connectTask.Wait(TimeSpan.FromSeconds(Math.Max(3, timeoutSeconds))))
+        lock (_gate)
         {
-            Disconnect();
-            throw new TimeoutException(
-                $"Connect to {ip}:{port} timed out after {timeoutSeconds}s. Check IP, power, and disconnect ZKTime.");
-        }
+            var connectTask = Task.Run(() => ConnectCore(ip, port, machineNumber, commPassword));
+            if (!connectTask.Wait(TimeSpan.FromSeconds(Math.Max(3, timeoutSeconds))))
+            {
+                DisconnectCore();
+                throw new TimeoutException(
+                    $"Connect to {ip}:{port} timed out after {timeoutSeconds}s. Check IP, power, and disconnect ZKTime.");
+            }
 
-        connectTask.GetAwaiter().GetResult();
+            try
+            {
+                connectTask.GetAwaiter().GetResult();
+            }
+            catch (AggregateException ex)
+            {
+                throw ex.InnerException ?? ex;
+            }
+        }
     }
 
     private void ConnectCore(string ip, int port, int machineNumber, int commPassword)
     {
-        Disconnect();
+        if (_connected && _connectedIp != null &&
+            string.Equals(_connectedIp, ip, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        DisconnectCore();
         _zk = CreateComInstance();
         if (_zk == null)
         {
@@ -75,10 +105,22 @@ public sealed class ZkEmKeeperClient : IDisposable
 
         _zk.EnableDevice(machineNumber, false);
         _connected = true;
+        _connectedIp = ip;
         _logger.LogInformation("Connected to ZKTeco at {Ip}:{Port} (machine {Machine})", ip, port, machineNumber);
     }
 
     public IReadOnlyList<ZkAttendanceLog> ReadAllLogs(
+        int machineNumber,
+        DateTimeOffset? sinceUtc,
+        Action<int>? onRowsRead = null)
+    {
+        lock (_gate)
+        {
+            return ReadAllLogsCore(machineNumber, sinceUtc, onRowsRead);
+        }
+    }
+
+    private IReadOnlyList<ZkAttendanceLog> ReadAllLogsCore(
         int machineNumber,
         DateTimeOffset? sinceUtc,
         Action<int>? onRowsRead = null)
@@ -137,6 +179,14 @@ public sealed class ZkEmKeeperClient : IDisposable
     /// <summary>Reads each enrolled user on the device and whether fingerprint / face templates exist.</summary>
     public ZkBioScanResult ReadUserBioStatuses(int machineNumber)
     {
+        lock (_gate)
+        {
+            return ReadUserBioStatusesCore(machineNumber);
+        }
+    }
+
+    private ZkBioScanResult ReadUserBioStatusesCore(int machineNumber)
+    {
         if (_zk == null || !_connected)
         {
             throw new InvalidOperationException("Not connected to device.");
@@ -172,6 +222,14 @@ public sealed class ZkEmKeeperClient : IDisposable
 
     public void Disconnect()
     {
+        lock (_gate)
+        {
+            DisconnectCore();
+        }
+    }
+
+    private void DisconnectCore()
+    {
         if (_zk == null) return;
         try
         {
@@ -193,6 +251,7 @@ public sealed class ZkEmKeeperClient : IDisposable
             }
             _zk = null;
             _connected = false;
+            _connectedIp = null;
         }
     }
 

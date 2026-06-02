@@ -2,13 +2,23 @@ const STORAGE_KEY = 'hrm_zkt_agent_url'
 
 const DEFAULT_AGENT_URL = import.meta.env.VITE_ZKT_AGENT_URL ?? 'http://127.0.0.1:17880'
 
+/** Corrects common typo 17888 → 17880 and persists the fix. */
+export function normalizeZktAgentUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/$/, '')
+  const fixed = trimmed.replace(/:17888(?=\/|$)/, ':17880')
+  if (fixed !== trimmed) {
+    localStorage.setItem(STORAGE_KEY, fixed)
+  }
+  return fixed
+}
+
 export function getZktAgentUrl(): string {
   const saved = localStorage.getItem(STORAGE_KEY)?.trim()
-  return saved || DEFAULT_AGENT_URL
+  return normalizeZktAgentUrl(saved || DEFAULT_AGENT_URL)
 }
 
 export function setZktAgentUrl(url: string) {
-  localStorage.setItem(STORAGE_KEY, url.replace(/\/$/, ''))
+  localStorage.setItem(STORAGE_KEY, normalizeZktAgentUrl(url))
 }
 
 export type ZktSyncProgress = {
@@ -179,4 +189,31 @@ export async function fetchZktDeviceLanStatuses(
   } catch {
     return []
   }
+}
+
+export type ZktAgentCycleStatus = {
+  ok: boolean
+  syncing?: boolean
+  pollIntervalSeconds?: number
+  lastCycleAt?: string | null
+  summary?: string | null
+  devices?: ZktDeviceLanStatus[]
+}
+
+export async function fetchZktAgentCycleStatus(
+  agentUrl = getZktAgentUrl()
+): Promise<ZktAgentCycleStatus | null> {
+  try {
+    const res = await fetch(`${baseUrl(agentUrl)}/status`)
+    if (!res.ok) return null
+    return (await res.json()) as ZktAgentCycleStatus
+  } catch {
+    return null
+  }
+}
+
+export function isOfficePcBrowser(): boolean {
+  if (typeof window === 'undefined') return false
+  const h = window.location.hostname
+  return h === 'localhost' || h === '127.0.0.1'
 }

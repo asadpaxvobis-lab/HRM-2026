@@ -17,7 +17,9 @@ import { Link } from 'react-router-dom'
 import {
   getZktAgentUrl,
   fetchZktAgentHealth,
+  fetchZktAgentCycleStatus,
   fetchZktDeviceLanStatuses,
+  isOfficePcBrowser,
   pingZktAgent,
   type ZktDeviceLanStatus,
   resetZktAgentSync,
@@ -61,12 +63,29 @@ type Device = {
   agent_sync_notes: string | null
   agent_connect_ok: boolean | null
   agent_connect_checked_at: string | null
+  agent_lan_message: string | null
   is_active: boolean
   notes: string | null
   branches?: { name: string } | null
 }
 
 type Branch = { id: string; name: string }
+
+type AgentHeartbeat = {
+  last_seen_at: string
+  host_name: string | null
+  is_syncing: boolean
+  cycle_summary: string | null
+  devices_online: number
+  devices_total: number
+}
+
+const AGENT_STALE_MS = 35_000
+
+function heartbeatIsFresh(hb: AgentHeartbeat | null): boolean {
+  if (!hb?.last_seen_at) return false
+  return Date.now() - new Date(hb.last_seen_at).getTime() < AGENT_STALE_MS
+}
 
 type PinEmployee = {
   id: string
@@ -154,7 +173,10 @@ export function DevicesPage() {
   const [zkSdkReady, setZkSdkReady] = useState<boolean | null>(null)
   const [zkSdkHint, setZkSdkHint] = useState<string | null>(null)
   const [lanStatus, setLanStatus] = useState<Record<string, ZktDeviceLanStatus>>({})
+  const [agentHeartbeat, setAgentHeartbeat] = useState<AgentHeartbeat | null>(null)
+  const [autoSyncSummary, setAutoSyncSummary] = useState<string | null>(null)
   const [zkPunchCount, setZkPunchCount] = useState<number | null>(null)
+  const onOfficePc = isOfficePcBrowser()
   const [syncProgress, setSyncProgress] = useState<ZktSyncProgress | null>(null)
   const [pinEmployees, setPinEmployees] = useState<PinEmployee[]>([])
   const [devicePinRows, setDevicePinRows] = useState<DevicePinRow[]>([])
@@ -162,6 +184,7 @@ export function DevicesPage() {
 
   async function loadDevicesFromDb() {
     const selects = [
+      'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, agent_last_sync_at, agent_sync_notes, agent_connect_ok, agent_connect_checked_at, agent_lan_message, is_active, notes, branches(name)',
       'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, agent_last_sync_at, agent_sync_notes, agent_connect_ok, agent_connect_checked_at, is_active, notes, branches(name)',
       'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, agent_last_sync_at, agent_sync_notes, is_active, notes, branches(name)',
       'id, branch_id, name, serial_no, device_type, ip_address, push_token, last_seen_at, is_active, notes, branches(name)',
@@ -230,7 +253,71 @@ export function DevicesPage() {
     setLastDeviceByEmployee(byEmp)
 
     setLoading(false)
-    void checkAgent()
+    void refreshAgentStatus()
+  }
+
+  async function loadAgentHeartbeat() {
+    if (!appUser?.company_id) return
+    const { data, error } = await supabase
+      .from('zkt_agent_heartbeat')
+      .select('last_seen_at, host_name, is_syncing, cycle_summary, devices_online, devices_total')
+      .eq('company_id', appUser.company_id)
+      .maybeSingle()
+    if (!error && data) {
+      setAgentHeartbeat(data as AgentHeartbeat)
+    }
+  }
+
+  async function refreshDevicesQuiet() {
+    const d = await loadDevicesFromDb()
+    if (!d.error) {
+      const mapped = ((d.data ?? []) as unknown as Record<string, unknown>[]).map((r) => {
+        const br = r.branches
+        return { ...r, branches: Array.isArray(br) ? br[0] : br } as Device
+      })
+      setRows(mapped)
+    }
+    await loadAgentHeartbeat()
+  }
+
+  async function refreshAgentStatus() {
+    let hb: AgentHeartbeat | null = agentHeartbeat
+    if (appUser?.company_id) {
+      const { data, error } = await supabase
+        .from('zkt_agent_heartbeat')
+        .select('last_seen_at, host_name, is_syncing, cycle_summary, devices_online, devices_total')
+        .eq('company_id', appUser.company_id)
+        .maybeSingle()
+      if (!error && data) {
+        hb = data as AgentHeartbeat
+        setAgentHeartbeat(hb)
+      }
+    }
+
+    const hbFresh = heartbeatIsFresh(hb)
+    if (hb?.cycle_summary) setAutoSyncSummary(hb.cycle_summary)
+
+    if (onOfficePc) {
+      const health = await fetchZktAgentHealth(agentUrl)
+      setAgentOnline(health?.ok === true || hbFresh)
+      setZkSdkReady(health?.zkemkeeper ?? null)
+      setZkSdkHint(health?.hint ?? null)
+      const cycle = await fetchZktAgentCycleStatus(agentUrl)
+      if (cycle?.summary) setAutoSyncSummary(cycle.summary)
+      if (cycle?.devices?.length) {
+        const map: Record<string, ZktDeviceLanStatus> = {}
+        for (const p of cycle.devices) map[p.id] = p
+        setLanStatus(map)
+      }
+    } else {
+      setAgentOnline(hbFresh)
+      setZkSdkReady(null)
+      setZkSdkHint(
+        hbFresh
+          ? null
+          : 'Office agent not detected. Run run-agent.ps1 on the office PC — status updates here every 10 seconds.',
+      )
+    }
   }
 
   const unmappedPins = collectUnmappedPins(rows)
@@ -248,11 +335,12 @@ export function DevicesPage() {
       const map: Record<string, ZktDeviceLanStatus> = {}
       for (const p of probes) map[p.id] = p
       setLanStatus(map)
-      if (probes.length > 0) void load()
     } else {
       setLanStatus({})
     }
   }
+
+  const agentUrlLooksWrong = /:17888\b/.test(agentUrl)
 
   async function resetSyncCursor() {
     if (!confirm('Clear sync cursor and re-import the last 90 days from devices on the next pull?')) return
@@ -307,6 +395,14 @@ export function DevicesPage() {
   useEffect(() => {
     void load()
   }, [])
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void refreshDevicesQuiet()
+      void refreshAgentStatus()
+    }, 10_000)
+    return () => clearInterval(timer)
+  }, [agentUrl, appUser?.company_id])
 
   const openCreate = () => {
     setEditing(null)
@@ -424,9 +520,15 @@ export function DevicesPage() {
         <CardHeader>
           <CardTitle className="text-base">ZKTeco LAN pull (K40 without ADMS)</CardTitle>
           <CardDescription>
-            The web app cannot talk to the device directly. Run the Windows agent on the office PC, then use Pull
-            from device. Data is stored in <span className="font-mono text-xs">attendance_punches</span> (
-            <span className="font-mono text-xs">source = zkteco</span>).
+            Run the Windows agent on the office PC. It auto-syncs every <strong>10 seconds</strong> and reports which
+            devices are connected. Data is stored in <span className="font-mono text-xs">attendance_punches</span>{' '}
+            (<span className="font-mono text-xs">source = zkteco</span>).
+            {!onOfficePc ? (
+              <span className="block mt-2 text-amber-700 dark:text-amber-400">
+                You are on the cloud site — <span className="font-mono">127.0.0.1</span> will not work here. Device
+                status below is updated by the office PC agent via Supabase.
+              </span>
+            ) : null}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 border-b pb-6">
@@ -441,7 +543,7 @@ export function DevicesPage() {
               />
             </div>
             <Button variant="outline" size="sm" onClick={() => void checkAgent()}>
-              Test agent
+              Test agent &amp; LAN
             </Button>
             <HasPermission perm="attendance.device">
               <Button variant="outline" size="sm" disabled={syncBusy} onClick={() => void resetSyncCursor()}>
@@ -455,15 +557,36 @@ export function DevicesPage() {
           </div>
           <div className="flex flex-wrap gap-4 text-sm">
             <span>
-              Agent:{' '}
-              {agentOnline === null ? (
+              Office agent:{' '}
+              {agentOnline === null && !agentHeartbeat ? (
                 '—'
-              ) : agentOnline ? (
-                <Badge variant="warm">Running</Badge>
+              ) : agentOnline || heartbeatIsFresh(agentHeartbeat) ? (
+                <Badge variant="warm">
+                  Working
+                  {agentHeartbeat?.host_name ? ` (${agentHeartbeat.host_name})` : ''}
+                </Badge>
               ) : (
-                <Badge variant="secondary">Not reachable</Badge>
+                <Badge variant="secondary">Not working</Badge>
               )}
             </span>
+            {heartbeatIsFresh(agentHeartbeat) ? (
+              <span className="text-xs text-muted-foreground">
+                Last sync{' '}
+                {new Date(agentHeartbeat!.last_seen_at).toLocaleTimeString('en-PK', { timeStyle: 'short' })}
+                {agentHeartbeat!.is_syncing
+                  ? ' · syncing now…'
+                  : ` · ${agentHeartbeat!.devices_online}/${agentHeartbeat!.devices_total} device(s) connected`}
+              </span>
+            ) : null}
+            {autoSyncSummary ? (
+              <p className="w-full text-xs text-muted-foreground">{autoSyncSummary}</p>
+            ) : null}
+            {agentUrlLooksWrong ? (
+              <p className="w-full text-xs text-amber-700 dark:text-amber-400">
+                Agent URL port looks wrong. Use <code className="text-foreground">http://127.0.0.1:17880</code>{' '}
+                (not 17888). The agent listens on port 17880 by default.
+              </p>
+            ) : null}
             {agentOnline === false ? (
               <p className="w-full text-xs text-muted-foreground">
                 On the office PC (same machine as ZKTime): open PowerShell in{' '}
@@ -573,8 +696,9 @@ export function DevicesPage() {
                     <th className="px-3 py-3">IP / Serial</th>
                     <th className="px-3 py-3">Last seen</th>
                     <th className="px-3 py-3">Last LAN sync</th>
+                    <th className="px-3 py-3">Office agent</th>
+                    <th className="px-3 py-3">Device LAN</th>
                     <th className="px-3 py-3">In HRM</th>
-                    <th className="px-3 py-3">On LAN</th>
                     <th className="px-3 py-3 w-32"></th>
                   </tr>
                 </thead>
@@ -617,43 +741,67 @@ export function DevicesPage() {
                           )}
                         </td>
                         <td className="px-3 py-3">
+                          {heartbeatIsFresh(agentHeartbeat) ? (
+                            <Badge variant="warm" title="Agent running on office PC">
+                              Working
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary" title="Start run-agent.ps1 on office PC">
+                              Not working
+                            </Badge>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-xs max-w-[220px]">
+                          {(() => {
+                            const live = lanStatus[d.id]
+                            const ok = live?.connected ?? d.agent_connect_ok
+                            const msg =
+                              live?.message ??
+                              d.agent_lan_message ??
+                              (ok ? 'Connected' : d.agent_sync_notes) ??
+                              ''
+                            const checked = live != null || d.agent_connect_checked_at != null
+                            if (!d.is_active) {
+                              return <span className="text-muted-foreground">—</span>
+                            }
+                            if (!d.ip_address) {
+                              return <span className="text-muted-foreground">No IP</span>
+                            }
+                            if (!heartbeatIsFresh(agentHeartbeat)) {
+                              return (
+                                <span className="text-muted-foreground">Waiting for office agent…</span>
+                              )
+                            }
+                            if (!checked) {
+                              return <span className="text-muted-foreground">Checking…</span>
+                            }
+                            return ok ? (
+                              <div>
+                                <Badge variant="warm">Connected</Badge>
+                                {msg ? (
+                                  <div className="text-muted-foreground mt-0.5 truncate" title={msg}>
+                                    {msg}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <div>
+                                <Badge variant="secondary">Not connected</Badge>
+                                {msg ? (
+                                  <div className="text-muted-foreground mt-0.5 truncate" title={msg}>
+                                    {msg}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )
+                          })()}
+                        </td>
+                        <td className="px-3 py-3">
                           {d.is_active ? (
                             <Badge variant="warm">Active</Badge>
                           ) : (
                             <Badge variant="secondary">Disabled</Badge>
                           )}
-                        </td>
-                        <td className="px-3 py-3">
-                          {(() => {
-                            const live = lanStatus[d.id]
-                            const ok = live?.connected ?? d.agent_connect_ok
-                            const checked = live != null || d.agent_connect_checked_at != null
-                            if (!d.is_active) {
-                              return <Badge variant="secondary">—</Badge>
-                            }
-                            if (!d.ip_address) {
-                              return <Badge variant="secondary">No IP</Badge>
-                            }
-                            if (!checked) {
-                              return (
-                                <Badge variant="outline" title="Click Test agent to check connection">
-                                  Unknown
-                                </Badge>
-                              )
-                            }
-                            return ok ? (
-                              <Badge variant="warm" title={live?.message ?? 'Device reachable'}>
-                                Connected
-                              </Badge>
-                            ) : (
-                              <Badge
-                                variant="secondary"
-                                title={live?.message ?? d.agent_sync_notes ?? 'Not reachable'}
-                              >
-                                Not connected
-                              </Badge>
-                            )
-                          })()}
                         </td>
                         <td className="px-3 py-3">
                           {canManage && (
