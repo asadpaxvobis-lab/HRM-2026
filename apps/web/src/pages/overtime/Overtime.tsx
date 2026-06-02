@@ -12,6 +12,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
 import { PageHeader } from '@/components/master/PageHeader'
+import { EmployeeSearchSelect } from '@/components/master/EmployeeSearchSelect'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -28,6 +29,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { toast } from 'sonner'
+import {
+  fetchOtPayContext,
+  formatPkr,
+  overtimePayAmount,
+  type OtPayContext,
+} from '@/lib/overtimePay'
 
 type OT = {
   id: string
@@ -43,6 +50,7 @@ type OT = {
   hourly_rate: number | null
   amount: number | null
   reason: string
+  source?: 'manual' | 'attendance'
   status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAID' | 'CANCELLED'
   approved_by: string | null
   approved_at: string | null
@@ -71,7 +79,86 @@ const otTypeRate: Record<OT['ot_type'], number> = {
   NIGHT: 2.0,
 }
 
+function OtPayEstimateCard({
+  loading,
+  pay,
+  plannedHours,
+  rateMultiplier,
+  otDate,
+  earnLabel = 'Amount',
+}: {
+  loading: boolean
+  pay: OtPayContext | null
+  plannedHours: number
+  rateMultiplier: number
+  otDate: string
+  earnLabel?: string
+}) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+        <Loader2 className="h-4 w-4 animate-spin" /> Loading pay estimate…
+      </div>
+    )
+  }
+
+  if (!pay || pay.basic <= 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Basic salary not loaded. Ensure compensation is saved and run{' '}
+        <span className="font-mono text-xs">APPLY_0041_OT_PAY_CONTEXT.sql</span> in Supabase once.
+      </p>
+    )
+  }
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 text-sm">
+      <div className="space-y-2 rounded-lg border bg-background/80 p-3">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">This request</div>
+        <div className="flex justify-between gap-2">
+          <span className="text-muted-foreground">OT hours</span>
+          <span className="font-medium tabular-nums">{Number(plannedHours).toFixed(2)} h</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-muted-foreground">Basic salary</span>
+          <span className="font-medium tabular-nums">{formatPkr(pay.basic, pay.currency)}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-muted-foreground">Hourly rate</span>
+          <span className="font-medium tabular-nums">{formatPkr(pay.hourly_rate, pay.currency)}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-muted-foreground">OT multiplier</span>
+          <span className="font-medium tabular-nums">×{Number(rateMultiplier).toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between gap-2 border-t pt-2">
+          <span className="font-medium">{earnLabel}</span>
+          <span className="font-semibold tabular-nums text-primary">
+            {formatPkr(pay.request_amount, pay.currency)}
+          </span>
+        </div>
+      </div>
+      <div className="space-y-2 rounded-lg border bg-background/80 p-3">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Month total ({otDate.slice(0, 7)})
+        </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-muted-foreground">Total OT hours</span>
+          <span className="font-medium tabular-nums">{pay.month_total_hours.toFixed(2)} h</span>
+        </div>
+        <div className="flex justify-between gap-2 border-t pt-2">
+          <span className="font-medium">Total OT amount</span>
+          <span className="font-semibold tabular-nums text-primary">
+            {formatPkr(pay.month_total_amount, pay.currency)}
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const emptyForm = {
+  employee_id: '',
   ot_date: new Date().toISOString().slice(0, 10),
   start_time: '',
   end_time: '',
@@ -81,17 +168,26 @@ const emptyForm = {
   reason: '',
 }
 
+type EmployeeOption = { id: string; employee_code: string; full_name: string }
+
 export function OvertimePage() {
   const { appUser, hasPermission } = useAuth()
-  const canApply = hasPermission('overtime.apply') && !!appUser?.employee_id
+  const canApplyForAny = hasPermission('overtime.approve') || hasPermission('overtime.config')
+  const canApplySelf = hasPermission('overtime.apply') && !!appUser?.employee_id
+  const canOpenForm = canApplySelf || canApplyForAny
   const canApprove = hasPermission('overtime.approve')
   const canView = hasPermission('overtime.view')
   const [tab, setTab] = useState<Tab>(canApprove ? 'pending' : 'mine')
   const [rows, setRows] = useState<OT[]>([])
+  const [employees, setEmployees] = useState<EmployeeOption[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState(emptyForm)
+  const [payContext, setPayContext] = useState<OtPayContext | null>(null)
+  const [payLoading, setPayLoading] = useState(false)
+  const [decisionPay, setDecisionPay] = useState<OtPayContext | null>(null)
+  const [decisionPayLoading, setDecisionPayLoading] = useState(false)
   const [decisionFor, setDecisionFor] = useState<{ ot: OT; approve: boolean } | null>(null)
   const [decisionNote, setDecisionNote] = useState('')
 
@@ -100,7 +196,7 @@ export function OvertimePage() {
     let q = supabase
       .from('overtime_requests')
       .select(
-        'id, ot_no, employee_id, ot_date, start_time, end_time, planned_hours, actual_hours, ot_type, rate_multiplier, hourly_rate, amount, reason, status, approved_by, approved_at, decision_note, created_at, employees(full_name, employee_code)'
+        'id, ot_no, employee_id, ot_date, start_time, end_time, planned_hours, actual_hours, ot_type, rate_multiplier, hourly_rate, amount, reason, source, status, approved_by, approved_at, decision_note, created_at, employees(full_name, employee_code)'
       )
       .order('ot_date', { ascending: false })
       .limit(200)
@@ -125,6 +221,41 @@ export function OvertimePage() {
     void load()
   }, [tab])
 
+  useEffect(() => {
+    if (!canApprove) return
+    const channel = supabase
+      .channel('overtime-pending')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'overtime_requests' },
+        () => {
+          void load()
+        }
+      )
+      .subscribe()
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [canApprove, tab])
+
+  useEffect(() => {
+    if (!canOpenForm) return
+    void supabase
+      .from('employees')
+      .select('id, employee_code, full_name')
+      .eq('is_active', true)
+      .order('full_name')
+      .then(({ data, error }) => {
+        if (error) toast.error('Failed to load employees', { description: error.message })
+        else setEmployees((data ?? []) as EmployeeOption[])
+      })
+  }, [canOpenForm])
+
+  const selfEmployee = useMemo(
+    () => employees.find((e) => e.id === appUser?.employee_id),
+    [employees, appUser?.employee_id]
+  )
+
   const totals = useMemo(() => {
     const sumHours = (filter: (r: OT) => boolean) => rows.filter(filter).reduce((s, r) => s + Number(r.planned_hours), 0)
     const sumAmount = (filter: (r: OT) => boolean) => rows.filter(filter).reduce((s, r) => s + Number(r.amount ?? 0), 0)
@@ -136,9 +267,86 @@ export function OvertimePage() {
   }, [rows])
 
   const openCreate = () => {
-    setForm({ ...emptyForm, ot_date: new Date().toISOString().slice(0, 10) })
+    setForm({
+      ...emptyForm,
+      employee_id: canApplySelf ? appUser!.employee_id! : '',
+      ot_date: new Date().toISOString().slice(0, 10),
+    })
+    setPayContext(null)
     setOpen(true)
   }
+
+  const selectedEmployeeId = form.employee_id || (canApplySelf ? appUser?.employee_id ?? '' : '')
+
+  async function loadPayContext(
+    employeeId: string,
+    otDate: string,
+    plannedHours: number,
+    rateMultiplier: number,
+    excludeRequestId?: string | null
+  ) {
+    const res = await fetchOtPayContext(
+      supabase,
+      employeeId,
+      otDate,
+      plannedHours,
+      rateMultiplier,
+      excludeRequestId
+    )
+    if (res.error) {
+      toast.error('Could not load OT pay estimate', { description: res.error })
+      return null
+    }
+    return res.data
+  }
+
+  useEffect(() => {
+    if (!open || !selectedEmployeeId) {
+      setPayContext(null)
+      return
+    }
+    let cancelled = false
+    setPayLoading(true)
+    void loadPayContext(
+      selectedEmployeeId,
+      form.ot_date,
+      form.planned_hours,
+      form.rate_multiplier
+    ).then((ctx) => {
+      if (!cancelled) {
+        setPayContext(ctx)
+        setPayLoading(false)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, selectedEmployeeId, form.ot_date, form.planned_hours, form.rate_multiplier])
+
+  useEffect(() => {
+    if (!decisionFor) {
+      setDecisionPay(null)
+      return
+    }
+    let cancelled = false
+    setDecisionPayLoading(true)
+    const { ot } = decisionFor
+    void loadPayContext(
+      ot.employee_id,
+      ot.ot_date,
+      Number(ot.planned_hours),
+      Number(ot.rate_multiplier),
+      ot.id
+    ).then((ctx) => {
+      if (!cancelled) {
+        setDecisionPay(ctx)
+        setDecisionPayLoading(false)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [decisionFor])
 
   // Auto-derive planned_hours from start/end if both set
   useEffect(() => {
@@ -158,8 +366,10 @@ export function OvertimePage() {
   }, [form.ot_type])
 
   async function submit() {
-    if (!appUser?.employee_id) {
-      toast.error('Your user account is not linked to an employee record')
+    if (!appUser) return
+    const employeeId = selectedEmployeeId
+    if (!employeeId) {
+      toast.error('Select an employee')
       return
     }
     if (!form.reason.trim()) {
@@ -168,6 +378,10 @@ export function OvertimePage() {
     }
     if (form.planned_hours <= 0) {
       toast.error('Planned hours must be greater than zero')
+      return
+    }
+    if (!form.ot_date) {
+      toast.error('Date is required')
       return
     }
     setBusy(true)
@@ -190,15 +404,18 @@ export function OvertimePage() {
     const payload = {
       company_id: appUser.company_id,
       ot_no,
-      employee_id: appUser.employee_id,
+      employee_id: employeeId,
       ot_date: form.ot_date,
       start_time: form.start_time || null,
       end_time: form.end_time || null,
       planned_hours: form.planned_hours,
       ot_type: form.ot_type,
       rate_multiplier: form.rate_multiplier,
+      hourly_rate: payContext && payContext.hourly_rate > 0 ? payContext.hourly_rate : null,
+      amount: payContext && payContext.request_amount > 0 ? payContext.request_amount : null,
       reason: form.reason.trim(),
       status: 'PENDING' as const,
+      source: 'manual' as const,
     }
     const { data, error } = await supabase.from('overtime_requests').insert(payload).select('id').single()
     setBusy(false)
@@ -207,8 +424,13 @@ export function OvertimePage() {
       return
     }
     await writeAuditLog({ action: 'CREATE', entityType: 'overtime', entityId: data?.id, after: payload })
-    toast.success('Overtime request submitted')
+    toast.success(
+      canApplyForAny && employeeId !== appUser.employee_id
+        ? 'Overtime submitted — see Pending approvals'
+        : 'Overtime request submitted for approval'
+    )
     setOpen(false)
+    if (canApprove) setTab('pending')
     void load()
   }
 
@@ -217,6 +439,25 @@ export function OvertimePage() {
     setBusy(true)
     const { ot, approve } = decisionFor
     const next = approve ? 'APPROVED' : 'REJECTED'
+
+    let approvedHourly = Number(ot.hourly_rate ?? 0)
+    let approvedAmount = Number(ot.amount ?? 0)
+    if (approve && (approvedHourly <= 0 || approvedAmount <= 0)) {
+      const pay = await loadPayContext(
+        ot.employee_id,
+        ot.ot_date,
+        Number(ot.planned_hours),
+        Number(ot.rate_multiplier),
+        ot.id
+      )
+      if (approvedHourly <= 0 && pay) {
+        approvedHourly = pay.hourly_rate
+      }
+      if (approvedAmount <= 0 && pay) {
+        approvedAmount = pay.request_amount
+      }
+    }
+
     const { error } = await supabase
       .from('overtime_requests')
       .update({
@@ -225,6 +466,8 @@ export function OvertimePage() {
         approved_at: new Date().toISOString(),
         decision_note: decisionNote.trim() || null,
         actual_hours: approve ? ot.planned_hours : null,
+        hourly_rate: approve && approvedHourly > 0 ? approvedHourly : ot.hourly_rate,
+        amount: approve && approvedAmount > 0 ? approvedAmount : approve ? null : ot.amount,
       })
       .eq('id', ot.id)
     setBusy(false)
@@ -267,15 +510,15 @@ export function OvertimePage() {
     <div className="space-y-6">
       <PageHeader
         title="Overtime"
-        description="Submit overtime requests, manage approvals, and track hours."
+        description="Submit or auto-detect overtime from attendance. Pending items appear for HR approval."
         actions={
           <>
             <Button variant="outline" size="sm" onClick={() => void load()}>
               <RefreshCw className="h-4 w-4" />
             </Button>
-            {canApply && (
+            {canOpenForm && (
               <Button size="sm" onClick={openCreate}>
-                <Plus className="h-4 w-4" /> Apply for overtime
+                <Plus className="h-4 w-4" /> {canApplyForAny ? 'Record overtime' : 'Apply for overtime'}
               </Button>
             )}
           </>
@@ -332,7 +575,7 @@ export function OvertimePage() {
             <div className="p-12 text-center text-sm text-muted-foreground">
               <Clock className="h-8 w-8 mx-auto mb-3 opacity-50" />
               No overtime requests here.
-              {tab === 'mine' && canApply && (
+              {tab === 'mine' && canApplySelf && (
                 <div className="mt-4">
                   <Button size="sm" onClick={openCreate}>
                     <Plus className="h-4 w-4" /> Apply for your first overtime
@@ -350,6 +593,7 @@ export function OvertimePage() {
                     <th className="text-left px-4 py-2">Date</th>
                     <th className="text-left px-4 py-2">Time</th>
                     <th className="text-right px-4 py-2">Hours</th>
+                    <th className="text-right px-4 py-2">Amount</th>
                     <th className="text-left px-4 py-2">Type</th>
                     <th className="text-right px-4 py-2">Rate</th>
                     <th className="text-left px-4 py-2">Status</th>
@@ -359,7 +603,14 @@ export function OvertimePage() {
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.id} className="border-t hover:bg-muted/30">
-                      <td className="px-4 py-3 font-mono text-xs">{r.ot_no}</td>
+                      <td className="px-4 py-3 font-mono text-xs">
+                        <div className="flex items-center gap-1.5">
+                          {r.ot_no}
+                          {r.source === 'attendance' && (
+                            <Badge variant="secondary" className="text-[9px] px-1 py-0">Auto</Badge>
+                          )}
+                        </div>
+                      </td>
                       {tab !== 'mine' && (
                         <td className="px-4 py-3">
                           <div className="font-medium">{r.employees?.full_name}</div>
@@ -374,6 +625,19 @@ export function OvertimePage() {
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums font-medium">
                         {Number(r.planned_hours).toFixed(1)}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {r.amount != null && Number(r.amount) > 0
+                          ? formatPkr(Number(r.amount))
+                          : r.hourly_rate
+                            ? formatPkr(
+                                overtimePayAmount(
+                                  Number(r.planned_hours),
+                                  Number(r.hourly_rate),
+                                  Number(r.rate_multiplier)
+                                )
+                              )
+                            : '—'}
                       </td>
                       <td className="px-4 py-3">
                         <Badge variant="outline" className="text-[10px]">{r.ot_type}</Badge>
@@ -428,17 +692,41 @@ export function OvertimePage() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Apply for overtime</DialogTitle>
+            <DialogTitle>{canApplyForAny ? 'Record overtime' : 'Apply for overtime'}</DialogTitle>
             <DialogDescription>
-              Submit a request for OT hours. Rate multiplier auto-selects based on day type.
+              {canApplyForAny
+                ? 'Select employee and date. Request goes to Pending approvals.'
+                : 'Submit OT hours for approval. Rate multiplier auto-selects by day type.'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid sm:grid-cols-2 gap-4">
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Employee *</Label>
+                {canApplyForAny ? (
+                  <EmployeeSearchSelect
+                    resetKey={open}
+                    employees={employees}
+                    value={form.employee_id}
+                    onChange={(employee_id) => setForm({ ...form, employee_id })}
+                    listMaxHeightClass="max-h-48"
+                  />
+                ) : (
+                  <Input
+                    readOnly
+                    value={
+                      selfEmployee
+                        ? `${selfEmployee.employee_code} — ${selfEmployee.full_name}`
+                        : 'Your employee profile'
+                    }
+                  />
+                )}
+              </div>
               <div className="space-y-2">
-                <Label>Date</Label>
+                <Label>Overtime date *</Label>
                 <Input
                   type="date"
+                  required
                   value={form.ot_date}
                   onChange={(e) => setForm({ ...form, ot_date: e.target.value })}
                 />
@@ -502,6 +790,26 @@ export function OvertimePage() {
                 placeholder="e.g. Production deadline support, urgent client deliverable, etc."
               />
             </div>
+
+            <Card className="border-primary/20 bg-primary/5">
+              <CardHeader className="pb-2 pt-4">
+                <CardTitle className="text-sm">Overtime pay estimate</CardTitle>
+                <CardDescription className="text-xs">
+                  Based on basic salary ÷ 208 hrs/month. Totals include this request for{' '}
+                  {form.ot_date.slice(0, 7)}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="pb-4">
+                <OtPayEstimateCard
+                  loading={payLoading}
+                  pay={payContext}
+                  plannedHours={form.planned_hours}
+                  rateMultiplier={form.rate_multiplier}
+                  otDate={form.ot_date}
+                  earnLabel="You earn"
+                />
+              </CardContent>
+            </Card>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
@@ -524,8 +832,28 @@ export function OvertimePage() {
             <DialogDescription>
               {decisionFor?.ot.employees?.full_name} · {decisionFor?.ot.ot_date} ·{' '}
               {decisionFor?.ot.planned_hours.toFixed(1)}h
+              {decisionFor?.ot.amount != null && Number(decisionFor.ot.amount) > 0 && (
+                <> · {formatPkr(Number(decisionFor.ot.amount))}</>
+              )}
             </DialogDescription>
           </DialogHeader>
+          {decisionFor?.approve && (
+            <Card className="border-primary/20 bg-primary/5">
+              <CardHeader className="pb-2 pt-3">
+                <CardTitle className="text-sm">Pay breakdown (admin)</CardTitle>
+              </CardHeader>
+              <CardContent className="pb-3">
+                <OtPayEstimateCard
+                  loading={decisionPayLoading}
+                  pay={decisionPay}
+                  plannedHours={Number(decisionFor.ot.planned_hours)}
+                  rateMultiplier={Number(decisionFor.ot.rate_multiplier)}
+                  otDate={decisionFor.ot.ot_date}
+                  earnLabel="Employee earns"
+                />
+              </CardContent>
+            </Card>
+          )}
           <div className="space-y-2">
             <Label>
               Note {!decisionFor?.approve && <span className="text-destructive">*</span>}

@@ -10,6 +10,9 @@
   "scripts": {
     "dev": "npm run dev -w @hrm/web",
     "dev:web": "npm run dev -w @hrm/web",
+    "dev:ensure": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-dev-server.ps1",
+    "dev:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-dev-server.ps1",
+    "dev:autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-dev-autostart.ps1",
     "build:web": "pnpm --filter @hrm/web build",
     "dev:api": "dotnet run --project apps/api/Hrm.Api.csproj",
     "build:api": "dotnet build apps/api/Hrm.Api.csproj",

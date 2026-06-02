@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
 import { PageHeader } from '@/components/master/PageHeader'
+import { EmployeeSearchSelect } from '@/components/master/EmployeeSearchSelect'
 import { HasPermission } from '@/components/HasPermission'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -295,7 +296,7 @@ export function CorrectionsPage() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-lg overflow-visible">
           <DialogHeader>
             <DialogTitle>New correction request</DialogTitle>
             <DialogDescription>
@@ -305,14 +306,13 @@ export function CorrectionsPage() {
           <form onSubmit={submitRequest} className="space-y-4">
             <div className="space-y-2">
               <Label>Employee</Label>
-              <Select required value={form.employee_id} onChange={(e) => setForm({ ...form, employee_id: e.target.value })}>
-                <option value="">Select employee</option>
-                {employees.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.employee_code} — {e.full_name}
-                  </option>
-                ))}
-              </Select>
+              <EmployeeSearchSelect
+                resetKey={open}
+                employees={employees}
+                value={form.employee_id}
+                onChange={(employee_id) => setForm({ ...form, employee_id })}
+                listMaxHeightClass="max-h-56"
+              />
             </div>
             <div className="grid sm:grid-cols-3 gap-4">
               <div className="space-y-2">

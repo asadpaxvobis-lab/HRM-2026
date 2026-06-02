@@ -30,6 +30,7 @@ pnpm-debug.log*
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+!.vscode/tasks.json
 .idea/
 *.suo
 *.user
@@ -58,6 +59,7 @@ supabase/.temp
 .cache/
 coverage/
 .eslintcache
+.dev-server/
 
 # ZKT Agent (secrets + local logs)
 apps/agent/appsettings.Local.json
