@@ -183,6 +183,13 @@ function minutesColumnValue(minutes: number, show: boolean): string {
   return String(Math.max(0, Math.round(minutes)))
 }
 
+function getDisplayStatus(d: Daily | undefined, dateStr: string): string {
+  const status = d?.status ?? 'Absent'
+  const m = rowMetrics(d, dateStr)
+  if (d?.first_in && status === 'Present' && m.late_minutes > 0) return 'Late'
+  return status
+}
+
 export function AttendancePage() {
   const { appUser, hasPermission } = useAuth()
   const canCreate = hasPermission('attendance.create')
@@ -283,12 +290,23 @@ export function AttendancePage() {
     const acc: Record<string, number> = { Present: 0, Late: 0, Absent: 0, Leave: 0, 'Weekly Off': 0, Holiday: 0, 'Half Day': 0 }
     for (const e of filtered) {
       const d = byEmployee.get(e.id)
-      const m = rowMetrics(d, date)
-      let s = d?.status ?? 'Absent'
-      if (d?.first_in && s === 'Present' && m.late_minutes > 0) s = 'Late'
+      const s = getDisplayStatus(d, date)
       acc[s] = (acc[s] ?? 0) + 1
     }
     return acc
+  }, [filtered, byEmployee, date])
+
+  const statusGroups = useMemo(() => {
+    const present: Employee[] = []
+    const late: Employee[] = []
+    const absent: Employee[] = []
+    for (const e of filtered) {
+      const status = getDisplayStatus(byEmployee.get(e.id), date)
+      if (status === 'Present') present.push(e)
+      else if (status === 'Late') late.push(e)
+      else if (status === 'Absent') absent.push(e)
+    }
+    return { present, late, absent }
   }, [filtered, byEmployee, date])
 
   const onRecompute = async () => {
@@ -493,8 +511,7 @@ export function AttendancePage() {
     const data = filtered.map((e) => {
       const d = byEmployee.get(e.id)
       const m = rowMetrics(d, date)
-      const status = d?.status ?? 'Absent'
-      const displayStatus = d?.first_in && status === 'Present' && m.late_minutes > 0 ? 'Late' : status
+      const displayStatus = getDisplayStatus(d, date)
       return {
         employee_code: e.employee_code,
         full_name: e.full_name,
@@ -512,6 +529,102 @@ export function AttendancePage() {
     downloadCsv(`attendance-${date}.csv`, toCsv(data))
     toast.success('Exported')
   }
+
+  const renderStatusTable = (title: string, people: Employee[]) => (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">
+          {title} ({people.length})
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        {people.length === 0 ? (
+          <div className="px-6 pb-6 text-sm text-muted-foreground">No employees in this status.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
+                <tr className="text-left">
+                  <th className="px-6 py-3">Employee</th>
+                  <th className="px-3 py-3">Shift</th>
+                  <th className="px-3 py-3">Status</th>
+                  <CompulsoryColumnHeader label="In" />
+                  <CompulsoryColumnHeader label="Out" />
+                  <CompulsoryColumnHeader label="Worked" />
+                  <CompulsoryColumnHeader label="Late (minutes)" />
+                  <CompulsoryColumnHeader label="Overtime (hours)" />
+                  {canUpdate && <th className="px-3 py-3 w-10"></th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {people.map((e) => {
+                  const d = byEmployee.get(e.id)
+                  const m = rowMetrics(d, date)
+                  const displayStatus = getDisplayStatus(d, date)
+                  const needsPunches = expectsPunches(displayStatus, d)
+                  const missingIn = needsPunches && !d?.first_in
+                  const missingOut = needsPunches && !d?.last_out
+                  return (
+                    <tr key={e.id} className="hover:bg-muted/20">
+                      <td className="px-6 py-3">
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-8 w-8">
+                            <AvatarFallback className={avatarColorFor(e.employee_code)}>
+                              {initialsFromName(e.full_name)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <div className="font-medium">{e.full_name}</div>
+                            <div className="text-xs text-muted-foreground">{e.employee_code}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-xs">
+                        {d?.shifts?.code ? (
+                          <span className="text-muted-foreground" title={d.shifts.name}>
+                            {d.shifts.code}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground/60 italic">No shift</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3">
+                        <Badge variant={statusVariant(displayStatus)}>{displayStatus}</Badge>
+                      </td>
+                      <td className={cn('px-3 py-3 tabular-nums', missingIn && requiredCellMissingClass)}>
+                        {fmtTime(d?.first_in ?? null)}
+                      </td>
+                      <td className={cn('px-3 py-3 tabular-nums', missingOut && requiredCellMissingClass)}>
+                        {fmtTime(d?.last_out ?? null)}
+                      </td>
+                      <td className="px-3 py-3 tabular-nums">{fmtMinutes(m.worked_minutes, true)}</td>
+                      <td className="px-3 py-3 tabular-nums">
+                        <span className={m.late_minutes > 0 ? 'text-amber-600 dark:text-amber-400 font-medium' : undefined}>
+                          {minutesColumnValue(m.late_minutes, !!d?.first_in)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 tabular-nums">
+                        <span className={m.overtime_minutes > 0 ? 'text-emerald-600 dark:text-emerald-400 font-medium' : undefined}>
+                          {d?.first_in ? fmtMinutes(m.overtime_minutes, true) : '—'}
+                        </span>
+                      </td>
+                      {canUpdate && (
+                        <td className="px-3 py-3">
+                          <Button variant="ghost" size="sm" onClick={() => void openEdit(e)} title="Edit attendance">
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
 
   return (
     <div className="space-y-6">
@@ -588,92 +701,13 @@ export function AttendancePage() {
           ) : filtered.length === 0 ? (
             <div className="p-16 text-center text-sm text-muted-foreground">
               <Calendar className="h-8 w-8 mx-auto mb-3 opacity-50" />
-              No employees match the filters.
+              No employees match the current filters.
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
-                  <tr className="text-left">
-                    <th className="px-6 py-3">Employee</th>
-                    <th className="px-3 py-3">Shift</th>
-                    <th className="px-3 py-3">Status</th>
-                    <CompulsoryColumnHeader label="In" />
-                    <CompulsoryColumnHeader label="Out" />
-                    <CompulsoryColumnHeader label="Worked" />
-                    <CompulsoryColumnHeader label="Late (minutes)" />
-                    <CompulsoryColumnHeader label="Overtime (minutes)" />
-                    {canUpdate && <th className="px-3 py-3 w-10"></th>}
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {filtered.map((e) => {
-                    const d = byEmployee.get(e.id)
-                    const m = rowMetrics(d, date)
-                    const status = d?.status ?? 'Absent'
-                    const displayStatus = d?.first_in && status === 'Present' && m.late_minutes > 0 ? 'Late' : status
-                    const needsPunches = expectsPunches(displayStatus, d)
-                    const missingIn = needsPunches && !d?.first_in
-                    const missingOut = needsPunches && !d?.last_out
-                    return (
-                      <tr key={e.id} className="hover:bg-muted/20">
-                        <td className="px-6 py-3">
-                          <div className="flex items-center gap-3">
-                            <Avatar className="h-8 w-8">
-                              <AvatarFallback className={avatarColorFor(e.employee_code)}>
-                                {initialsFromName(e.full_name)}
-                              </AvatarFallback>
-                            </Avatar>
-                            <div>
-                              <div className="font-medium">{e.full_name}</div>
-                              <div className="text-xs text-muted-foreground">{e.employee_code}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3 text-xs">
-                          {d?.shifts?.code ? (
-                            <span className="text-muted-foreground" title={d.shifts.name}>{d.shifts.code}</span>
-                          ) : (
-                            <span className="text-muted-foreground/60 italic">No shift</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge variant={statusVariant(displayStatus)}>{displayStatus}</Badge>
-                        </td>
-                        <td className={cn('px-3 py-3 tabular-nums', missingIn && requiredCellMissingClass)}>
-                          {fmtTime(d?.first_in ?? null)}
-                        </td>
-                        <td className={cn('px-3 py-3 tabular-nums', missingOut && requiredCellMissingClass)}>
-                          {fmtTime(d?.last_out ?? null)}
-                        </td>
-                        <td className="px-3 py-3 tabular-nums">{fmtMinutes(m.worked_minutes, true)}</td>
-                        <td className="px-3 py-3 tabular-nums">
-                          <span className={m.late_minutes > 0 ? 'text-amber-600 dark:text-amber-400 font-medium' : undefined}>
-                            {minutesColumnValue(m.late_minutes, !!d?.first_in)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 tabular-nums">
-                          <span className={m.overtime_minutes > 0 ? 'text-emerald-600 dark:text-emerald-400 font-medium' : undefined}>
-                            {minutesColumnValue(m.overtime_minutes, !!d?.first_in)}
-                          </span>
-                        </td>
-                        {canUpdate && (
-                          <td className="px-3 py-3">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => void openEdit(e)}
-                              title="Edit attendance"
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                          </td>
-                        )}
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+            <div className="space-y-4 p-4">
+              {renderStatusTable('Present', statusGroups.present)}
+              {renderStatusTable('Late', statusGroups.late)}
+              {renderStatusTable('Absent', statusGroups.absent)}
             </div>
           )}
         </CardContent>
