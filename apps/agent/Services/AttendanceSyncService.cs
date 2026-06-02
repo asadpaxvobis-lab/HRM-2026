@@ -211,6 +211,9 @@ public sealed class AttendanceSyncService
 
         _logger.LogInformation("Syncing {Name} @ {Ip} (since {Since})", device.Name, ip, since.ToString("u"));
 
+        var fetchLog = new ZkFetchLogCollector(_agent.MaxFetchLogEntriesPerRun);
+        fetchLog.SetSinceCursor(since);
+
         try
         {
             await SafeLanStatusAsync(device.Id, false, $"Connecting to {ip}…", ct);
@@ -219,7 +222,7 @@ public sealed class AttendanceSyncService
             _progress.AddLine("Connected — reading attendance logs from device…");
             _progress.SetPhase("read", "Reading logs from device (may take 1–2 min)…", 25, deviceSlice, deviceBase);
 
-            var logs = _zk.ReadAllLogs(
+            var read = _zk.ReadAllLogs(
                 _agent.MachineNumber,
                 since,
                 rowsRead =>
@@ -233,8 +236,11 @@ public sealed class AttendanceSyncService
                     }
                 });
 
+            fetchLog.SetReadStats(read.Logs.Count, read.ExcludedBeforeCursor);
+            var logs = read.Logs.ToList();
+
             _progress.SetCounts(logs.Count, 0);
-            _progress.AddLine($"Device buffer: {logs.Count:N0} log(s) in date range");
+            _progress.AddLine($"Device buffer: {logs.Count:N0} log(s) after cursor filter");
 
             if (logs.Count == 0)
             {
@@ -246,6 +252,7 @@ public sealed class AttendanceSyncService
                 _state.Save(device.Id, localState);
                 _progress.AddLine(noNewMsg);
                 _progress.SetPhase("done", "No new punches in date range", 100, deviceSlice, deviceBase);
+                await PersistFetchLogAsync(fetchLog, device, true, noNewMsg, null, 0, ct);
                 return (
                     $"{device.Name}: {noNewMsg}",
                     new DeviceCycleStatus(device.Id, device.Name, ip, true, "Connected — no new punches"));
@@ -253,8 +260,11 @@ public sealed class AttendanceSyncService
 
             if (logs.Count > _agent.MaxPunchesPerSync)
             {
-                logs = logs.OrderBy(l => l.PunchAt).TakeLast(_agent.MaxPunchesPerSync).ToList();
-                _progress.AddLine($"Capped to last {_agent.MaxPunchesPerSync:N0} punches this cycle");
+                var dropCount = logs.Count - _agent.MaxPunchesPerSync;
+                var capped = logs.Take(dropCount).ToList();
+                logs = logs.Skip(dropCount).ToList();
+                fetchLog.AddCapped(capped);
+                _progress.AddLine($"Capped to last {_agent.MaxPunchesPerSync:N0} punches this cycle ({dropCount} older rows logged as capped)");
             }
 
             _progress.SetPhase("map", "Matching employee PINs…", 65, deviceSlice, deviceBase);
@@ -265,6 +275,7 @@ public sealed class AttendanceSyncService
             var recomputeKeys = new HashSet<(Guid EmployeeId, DateOnly Date)>();
             var unmapped = new HashSet<int>();
             var unmappedLogs = new List<ZkAttendanceLog>();
+            var mappedCandidates = new List<(ZkAttendanceLog Log, Guid EmployeeId)>();
             DateTimeOffset? maxMappedPunch = null;
 
             foreach (var log in logs)
@@ -273,10 +284,31 @@ public sealed class AttendanceSyncService
                 {
                     unmapped.Add(log.Pin);
                     unmappedLogs.Add(log);
+                    fetchLog.AddUnmapped(log);
                     continue;
                 }
 
+                mappedCandidates.Add((log, employeeId));
+            }
+
+            HashSet<string> existingKeys = new(StringComparer.Ordinal);
+            if (mappedCandidates.Count > 0)
+            {
+                var fromUtc = mappedCandidates.Min(x => x.Log.PunchAt).AddMinutes(-1);
+                var toUtc = mappedCandidates.Max(x => x.Log.PunchAt).AddMinutes(1);
+                existingKeys = await _hrm.GetExistingPunchKeysAsync(device.Id, fromUtc, toUtc, ct);
+            }
+
+            foreach (var (log, employeeId) in mappedCandidates)
+            {
                 var punchUtc = log.PunchAt.ToUniversalTime();
+                var key = $"{employeeId}|{punchUtc:O}";
+                if (existingKeys.Contains(key))
+                {
+                    fetchLog.AddDuplicate(log.Pin, log.PunchAt, employeeId);
+                    continue;
+                }
+
                 punches.Add(new PunchInsert(
                     device.CompanyId,
                     employeeId,
@@ -293,6 +325,8 @@ public sealed class AttendanceSyncService
                         device_sn = device.SerialNo,
                     })));
 
+                fetchLog.AddInserted(log.Pin, log.PunchAt, employeeId);
+
                 if (maxMappedPunch == null || log.PunchAt > maxMappedPunch)
                 {
                     maxMappedPunch = log.PunchAt;
@@ -304,13 +338,13 @@ public sealed class AttendanceSyncService
                 }
             }
 
-            _progress.SetCounts(logs.Count, punches.Count);
-            _progress.AddLine($"Mapped {punches.Count} punch(es) to employees ({unmapped.Count} unmapped PIN(s))");
+            _progress.SetCounts(logs.Count, mappedCandidates.Count);
+            _progress.AddLine($"Mapped {mappedCandidates.Count} punch(es) ({unmapped.Count} unmapped PIN(s))");
             _progress.SetPhase("upload", $"Uploading {punches.Count} punch(es) to Supabase…", 78, deviceSlice, deviceBase);
 
             var inserted = await _hrm.InsertPunchesAsync(punches, ct);
             _progress.SetCounts(logs.Count, punches.Count, inserted);
-            _progress.AddLine($"Supabase: inserted ~{inserted} new row(s) (duplicates skipped)");
+            _progress.AddLine($"Supabase: inserted {inserted} new row(s) (see fetch log for skipped duplicates)");
 
             if (_agent.RecomputeAfterSync && recomputeKeys.Count > 0)
             {
@@ -327,7 +361,9 @@ public sealed class AttendanceSyncService
                 }
             }
 
-            var note = $"OK — read {logs.Count}, sent {punches.Count}, inserted ~{inserted}";
+            var note =
+                $"OK — read {logs.Count}, mapped {mappedCandidates.Count}, inserted {inserted}, " +
+                $"skipped {fetchLog.SkippedCount} (see fetch log)";
             if (unmapped.Count > 0)
             {
                 note += $"; unmapped PINs: {string.Join(", ", unmapped.OrderBy(x => x))}";
@@ -336,7 +372,6 @@ public sealed class AttendanceSyncService
             await SafeLanStatusAsync(device.Id, true, "Connected", ct);
             await _hrm.UpdateDeviceSyncStatusAsync(device.Id, note, ct);
 
-            // Do not skip past unmapped punches — retry them after Device PINs are set in HRM.
             if (unmappedLogs.Count > 0)
             {
                 var oldestUnmapped = unmappedLogs.Min(l => l.PunchAt);
@@ -359,6 +394,7 @@ public sealed class AttendanceSyncService
             _progress.SetPhase("done", note, 100, deviceSlice, deviceBase);
             _progress.AddLine($"{device.Name}: {note}");
             _logger.LogInformation("{Device}: {Note}", device.Name, note);
+            await PersistFetchLogAsync(fetchLog, device, true, note, null, inserted, ct);
             return (
                 $"{device.Name}: {note}",
                 new DeviceCycleStatus(device.Id, device.Name, ip, true, "Connected"));
@@ -369,6 +405,7 @@ public sealed class AttendanceSyncService
             var detail = ZkEmKeeperClient.FriendlyError(ex);
             var lanMsg = $"Not connected — {detail}";
             var msg = $"Error: {detail}";
+            fetchLog.AddError(msg);
             _progress.AddLine(msg);
             _logger.LogError(ex, "Failed syncing {Device}", device.Name);
             try
@@ -381,7 +418,43 @@ public sealed class AttendanceSyncService
                 _logger.LogWarning(patchEx, "Could not write device sync status");
             }
 
+            await PersistFetchLogAsync(fetchLog, device, false, null, msg, 0, ct);
             return ($"{device.Name}: {msg}", new DeviceCycleStatus(device.Id, device.Name, ip, false, lanMsg));
+        }
+    }
+
+    private async Task PersistFetchLogAsync(
+        ZkFetchLogCollector collector,
+        HrmDevice device,
+        bool success,
+        string? summary,
+        string? errorMessage,
+        int insertedCount,
+        CancellationToken ct)
+    {
+        try
+        {
+            var draft = new ZkFetchRunDraft(
+                device.CompanyId,
+                device.Id,
+                collector.StartedAt,
+                DateTimeOffset.UtcNow,
+                success,
+                collector.SinceCursor,
+                collector.LogsRead,
+                collector.ExcludedBeforeCursor,
+                collector.MappedCount,
+                insertedCount,
+                collector.DuplicateCount,
+                collector.SkippedCount,
+                summary,
+                errorMessage,
+                collector.Entries);
+            await _hrm.SaveFetchRunAsync(draft, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not save fetch log for {Device}", device.Name);
         }
     }
 

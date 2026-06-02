@@ -160,13 +160,24 @@ public sealed class SupabaseHrmClient
 
         var url = $"{BaseUrl()}/rest/v1/attendance_punches";
         using var req = CreateRequest(HttpMethod.Post, url);
-        req.Headers.Add("Prefer", "resolution=ignore-duplicates,return=minimal");
+        req.Headers.Add("Prefer", "resolution=ignore-duplicates,return=representation");
         req.Content = new StringContent(JsonSerializer.Serialize(punches, JsonOpts), Encoding.UTF8, "application/json");
 
         using var res = await _http.SendAsync(req, ct);
-        if (res.IsSuccessStatusCode) return punches.Count;
-
         var body = await res.Content.ReadAsStringAsync(ct);
+        if (res.IsSuccessStatusCode)
+        {
+            try
+            {
+                var inserted = JsonSerializer.Deserialize<List<PunchRow>>(body, JsonOpts) ?? [];
+                return inserted.Count;
+            }
+            catch
+            {
+                return punches.Count;
+            }
+        }
+
         if (res.StatusCode == System.Net.HttpStatusCode.Conflict || body.Contains("23505", StringComparison.Ordinal))
         {
             _logger.LogWarning("Some punches were duplicates and skipped.");
@@ -175,6 +186,97 @@ public sealed class SupabaseHrmClient
 
         res.EnsureSuccessStatusCode();
         return punches.Count;
+    }
+
+    public async Task<HashSet<string>> GetExistingPunchKeysAsync(
+        Guid deviceId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc,
+        CancellationToken ct)
+    {
+        var from = fromUtc.UtcDateTime.ToString("o");
+        var to = toUtc.UtcDateTime.ToString("o");
+        var url =
+            $"{BaseUrl()}/rest/v1/attendance_punches?device_id=eq.{deviceId}" +
+            $"&punch_at=gte.{Uri.EscapeDataString(from)}&punch_at=lte.{Uri.EscapeDataString(to)}" +
+            "&select=employee_id,punch_at";
+        using var req = CreateRequest(HttpMethod.Get, url);
+        using var res = await _http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        var json = await res.Content.ReadAsStringAsync(ct);
+        var rows = JsonSerializer.Deserialize<List<PunchKeyRow>>(json, JsonOpts) ?? [];
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {
+            keys.Add($"{row.EmployeeId}|{row.PunchAt:O}");
+        }
+
+        return keys;
+    }
+
+    public async Task SaveFetchRunAsync(ZkFetchRunDraft run, CancellationToken ct)
+    {
+        var runUrl = $"{BaseUrl()}/rest/v1/zkt_device_fetch_runs";
+        var runPayload = JsonSerializer.Serialize(new
+        {
+            company_id = run.CompanyId,
+            device_id = run.DeviceId,
+            started_at = run.StartedAt,
+            finished_at = run.FinishedAt,
+            success = run.Success,
+            since_cursor = run.SinceCursor,
+            logs_read = run.LogsRead,
+            excluded_before_cursor = run.ExcludedBeforeCursor,
+            mapped_count = run.MappedCount,
+            inserted_count = run.InsertedCount,
+            duplicate_count = run.DuplicateCount,
+            skipped_count = run.SkippedCount,
+            summary = run.Summary,
+            error_message = run.ErrorMessage,
+        }, JsonOpts);
+
+        using var runReq = CreateRequest(HttpMethod.Post, runUrl);
+        runReq.Headers.Add("Prefer", "return=representation");
+        runReq.Content = new StringContent(runPayload, Encoding.UTF8, "application/json");
+        using var runRes = await _http.SendAsync(runReq, ct);
+        if (!runRes.IsSuccessStatusCode)
+        {
+            var err = await runRes.Content.ReadAsStringAsync(ct);
+            _logger.LogDebug("Fetch run save skipped ({Status}): {Body}", runRes.StatusCode, err);
+            return;
+        }
+
+        var runJson = await runRes.Content.ReadAsStringAsync(ct);
+        var saved = JsonSerializer.Deserialize<List<FetchRunRow>>(runJson, JsonOpts);
+        var runId = saved?.FirstOrDefault()?.Id;
+        if (runId == null || run.Entries.Count == 0)
+        {
+            return;
+        }
+
+        var entries = run.Entries.Select(e => new
+        {
+            run_id = runId.Value,
+            device_pin = e.DevicePin,
+            punch_at = e.PunchAt,
+            outcome = e.Outcome,
+            reason = e.Reason,
+            employee_id = e.EmployeeId,
+        }).ToList();
+
+        var entryUrl = $"{BaseUrl()}/rest/v1/zkt_fetch_log_entries";
+        using var entryReq = CreateRequest(HttpMethod.Post, entryUrl);
+        entryReq.Content = new StringContent(JsonSerializer.Serialize(entries, JsonOpts), Encoding.UTF8, "application/json");
+        using var entryRes = await _http.SendAsync(entryReq, ct);
+        if (!entryRes.IsSuccessStatusCode)
+        {
+            var err = await entryRes.Content.ReadAsStringAsync(ct);
+            _logger.LogDebug("Fetch log entries save failed ({Status}): {Body}", entryRes.StatusCode, err);
+        }
     }
 
     public async Task RecomputeAsync(Guid employeeId, DateOnly date, CancellationToken ct)
@@ -377,6 +479,22 @@ public sealed class SupabaseHrmClient
     private sealed class AppSettingsRow
     {
         public JsonElement? Settings { get; set; }
+    }
+
+    private sealed class PunchRow
+    {
+        public Guid Id { get; set; }
+    }
+
+    private sealed class PunchKeyRow
+    {
+        public Guid EmployeeId { get; set; }
+        public DateTime PunchAt { get; set; }
+    }
+
+    private sealed class FetchRunRow
+    {
+        public Guid Id { get; set; }
     }
 }
 

@@ -8,6 +8,11 @@ public sealed record ZkAttendanceLog(
     int InOutMode
 );
 
+public sealed record ZkReadLogsResult(
+    IReadOnlyList<ZkAttendanceLog> Logs,
+    int RowsInDeviceBuffer,
+    int ExcludedBeforeCursor);
+
 public sealed record HrmDevice(
     Guid Id,
     Guid CompanyId,

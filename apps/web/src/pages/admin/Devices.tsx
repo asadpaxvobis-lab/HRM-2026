@@ -12,6 +12,7 @@ import {
   PowerOff,
   Download,
   Users,
+  FileText,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import {
@@ -78,6 +79,38 @@ type AgentHeartbeat = {
   cycle_summary: string | null
   devices_online: number
   devices_total: number
+}
+
+type FetchRun = {
+  id: string
+  device_id: string
+  started_at: string
+  finished_at: string
+  success: boolean
+  logs_read: number
+  excluded_before_cursor: number
+  inserted_count: number
+  duplicate_count: number
+  skipped_count: number
+  summary: string | null
+  error_message: string | null
+}
+
+type FetchLogEntry = {
+  id: string
+  run_id: string
+  device_pin: number | null
+  punch_at: string | null
+  outcome: string
+  reason: string
+}
+
+function outcomeBadgeVariant(outcome: string): 'warm' | 'secondary' | 'outline' | 'destructive' {
+  if (outcome === 'inserted') return 'warm'
+  if (outcome === 'duplicate') return 'secondary'
+  if (outcome === 'unmapped_pin' || outcome === 'capped' || outcome === 'before_cursor') return 'outline'
+  if (outcome === 'error') return 'destructive'
+  return 'outline'
 }
 
 const AGENT_STALE_MS = 35_000
@@ -175,6 +208,11 @@ export function DevicesPage() {
   const [lanStatus, setLanStatus] = useState<Record<string, ZktDeviceLanStatus>>({})
   const [agentHeartbeat, setAgentHeartbeat] = useState<AgentHeartbeat | null>(null)
   const [autoSyncSummary, setAutoSyncSummary] = useState<string | null>(null)
+  const [fetchLogDeviceId, setFetchLogDeviceId] = useState('')
+  const [fetchRuns, setFetchRuns] = useState<FetchRun[]>([])
+  const [fetchEntries, setFetchEntries] = useState<FetchLogEntry[]>([])
+  const [selectedFetchRunId, setSelectedFetchRunId] = useState<string | null>(null)
+  const [fetchLogLoading, setFetchLogLoading] = useState(false)
   const [zkPunchCount, setZkPunchCount] = useState<number | null>(null)
   const onOfficePc = isOfficePcBrowser()
   const [syncProgress, setSyncProgress] = useState<ZktSyncProgress | null>(null)
@@ -400,9 +438,58 @@ export function DevicesPage() {
     const timer = setInterval(() => {
       void refreshDevicesQuiet()
       void refreshAgentStatus()
+      if (fetchLogDeviceId) void loadFetchLogs(fetchLogDeviceId)
     }, 10_000)
     return () => clearInterval(timer)
-  }, [agentUrl, appUser?.company_id])
+  }, [agentUrl, appUser?.company_id, fetchLogDeviceId])
+
+  async function loadFetchLogs(deviceId: string) {
+    if (!deviceId) {
+      setFetchRuns([])
+      setFetchEntries([])
+      setSelectedFetchRunId(null)
+      return
+    }
+    setFetchLogLoading(true)
+    const runsRes = await supabase
+      .from('zkt_device_fetch_runs')
+      .select(
+        'id, device_id, started_at, finished_at, success, logs_read, excluded_before_cursor, inserted_count, duplicate_count, skipped_count, summary, error_message'
+      )
+      .eq('device_id', deviceId)
+      .order('started_at', { ascending: false })
+      .limit(15)
+
+    if (runsRes.error) {
+      setFetchRuns([])
+      setFetchEntries([])
+      setFetchLogLoading(false)
+      return
+    }
+
+    const runs = (runsRes.data ?? []) as FetchRun[]
+    setFetchRuns(runs)
+    const runId = selectedFetchRunId && runs.some((r) => r.id === selectedFetchRunId)
+      ? selectedFetchRunId
+      : runs[0]?.id ?? null
+    setSelectedFetchRunId(runId)
+
+    if (!runId) {
+      setFetchEntries([])
+      setFetchLogLoading(false)
+      return
+    }
+
+    const entriesRes = await supabase
+      .from('zkt_fetch_log_entries')
+      .select('id, run_id, device_pin, punch_at, outcome, reason')
+      .eq('run_id', runId)
+      .order('punch_at', { ascending: true })
+      .limit(500)
+
+    setFetchEntries(entriesRes.error ? [] : ((entriesRes.data ?? []) as FetchLogEntry[]))
+    setFetchLogLoading(false)
+  }
 
   const openCreate = () => {
     setEditing(null)
@@ -829,6 +916,167 @@ export function DevicesPage() {
                 </tbody>
               </table>
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <FileText className="h-4 w-4" />
+            ZKT fetch logs (per device)
+          </CardTitle>
+          <CardDescription>
+            Each agent pull is saved with punch-level detail: which rows were inserted, skipped as duplicate, unmapped
+            PIN, capped, or before the sync cursor. Use this for live testing. Requires migration{' '}
+            <span className="font-mono text-xs">0039_zkt_fetch_logs</span>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1 min-w-[200px]">
+              <Label className="text-xs">Device</Label>
+              <Select
+                value={fetchLogDeviceId}
+                onChange={(e) => {
+                  const id = e.target.value
+                  setFetchLogDeviceId(id)
+                  void loadFetchLogs(id)
+                }}
+              >
+                <option value="">Select device…</option>
+                {rows
+                  .filter((d) => d.device_type === 'ZKTeco' && d.is_active)
+                  .map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+              </Select>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!fetchLogDeviceId || fetchLogLoading}
+              onClick={() => void loadFetchLogs(fetchLogDeviceId)}
+            >
+              {fetchLogLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Refresh
+            </Button>
+          </div>
+
+          {!fetchLogDeviceId ? (
+            <p className="text-sm text-muted-foreground">Select a ZKTeco device to view fetch history.</p>
+          ) : fetchRuns.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No fetch logs yet. Run the office agent and wait for the next 10s sync (or Pull from device).
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {fetchRuns.map((r) => (
+                  <Button
+                    key={r.id}
+                    size="sm"
+                    variant={selectedFetchRunId === r.id ? 'default' : 'outline'}
+                    onClick={() => {
+                      setSelectedFetchRunId(r.id)
+                      void (async () => {
+                        setFetchLogLoading(true)
+                        const entriesRes = await supabase
+                          .from('zkt_fetch_log_entries')
+                          .select('id, run_id, device_pin, punch_at, outcome, reason')
+                          .eq('run_id', r.id)
+                          .order('punch_at', { ascending: true })
+                          .limit(500)
+                        setFetchEntries(
+                          entriesRes.error ? [] : ((entriesRes.data ?? []) as FetchLogEntry[])
+                        )
+                        setFetchLogLoading(false)
+                      })()
+                    }}
+                  >
+                    {new Date(r.started_at).toLocaleString('en-PK', { dateStyle: 'short', timeStyle: 'short' })}
+                    {r.success ? '' : ' · failed'}
+                  </Button>
+                ))}
+              </div>
+
+              {selectedFetchRunId ? (
+                (() => {
+                  const run = fetchRuns.find((r) => r.id === selectedFetchRunId)
+                  if (!run) return null
+                  return (
+                    <div className="space-y-3">
+                      <div className="text-sm flex flex-wrap gap-3">
+                        <span>
+                          Read: <strong>{run.logs_read}</strong>
+                        </span>
+                        <span>
+                          Inserted: <strong className="text-emerald-600">{run.inserted_count}</strong>
+                        </span>
+                        <span>
+                          Duplicates: <strong>{run.duplicate_count}</strong>
+                        </span>
+                        <span>
+                          Skipped: <strong>{run.skipped_count}</strong>
+                        </span>
+                        {run.excluded_before_cursor > 0 ? (
+                          <span>
+                            Before cursor: <strong>{run.excluded_before_cursor}</strong>
+                          </span>
+                        ) : null}
+                      </div>
+                      {run.summary ? (
+                        <p className="text-xs text-muted-foreground font-mono">{run.summary}</p>
+                      ) : null}
+                      {run.error_message ? (
+                        <p className="text-xs text-destructive">{run.error_message}</p>
+                      ) : null}
+                      <div className="overflow-auto max-h-[min(360px,50vh)] border rounded-md">
+                        <table className="w-full text-xs">
+                          <thead className="bg-muted sticky top-0">
+                            <tr className="text-left">
+                              <th className="px-3 py-2">PIN</th>
+                              <th className="px-3 py-2">Punch time</th>
+                              <th className="px-3 py-2">Outcome</th>
+                              <th className="px-3 py-2">Reason</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {fetchEntries.length === 0 ? (
+                              <tr>
+                                <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
+                                  No punch-level entries (empty pull or only summary rows).
+                                </td>
+                              </tr>
+                            ) : (
+                              fetchEntries.map((e) => (
+                                <tr key={e.id} className="hover:bg-muted/30">
+                                  <td className="px-3 py-2 font-mono">{e.device_pin ?? '—'}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap">
+                                    {e.punch_at
+                                      ? new Date(e.punch_at).toLocaleString('en-PK', {
+                                          dateStyle: 'short',
+                                          timeStyle: 'short',
+                                        })
+                                      : '—'}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <Badge variant={outcomeBadgeVariant(e.outcome)}>{e.outcome}</Badge>
+                                  </td>
+                                  <td className="px-3 py-2 text-muted-foreground">{e.reason}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )
+                })()
+              ) : null}
+            </>
           )}
         </CardContent>
       </Card>

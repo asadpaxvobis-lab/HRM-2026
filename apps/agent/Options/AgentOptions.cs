@@ -29,6 +29,12 @@ public sealed class AgentOptions
     /// <summary>Max punches uploaded per device per cycle (avoids huge first imports).</summary>
     public int MaxPunchesPerSync { get; set; } = 2000;
 
+    /// <summary>Max punch-level rows stored in zkt_fetch_log_entries per device pull.</summary>
+    public int MaxFetchLogEntriesPerRun { get; set; } = 500;
+
+    /// <summary>How many fetch runs to keep per device in Supabase.</summary>
+    public int MaxFetchRunsRetainedPerDevice { get; set; } = 30;
+
     /// <summary>Local HTTP API for HRM web "Pull now" button (office PC only).</summary>
     public bool EnableHttpTrigger { get; set; } = true;
 

@@ -109,7 +109,7 @@ public sealed class ZkEmKeeperClient : IDisposable
         _logger.LogInformation("Connected to ZKTeco at {Ip}:{Port} (machine {Machine})", ip, port, machineNumber);
     }
 
-    public IReadOnlyList<ZkAttendanceLog> ReadAllLogs(
+    public ZkReadLogsResult ReadAllLogs(
         int machineNumber,
         DateTimeOffset? sinceUtc,
         Action<int>? onRowsRead = null)
@@ -120,7 +120,7 @@ public sealed class ZkEmKeeperClient : IDisposable
         }
     }
 
-    private IReadOnlyList<ZkAttendanceLog> ReadAllLogsCore(
+    private ZkReadLogsResult ReadAllLogsCore(
         int machineNumber,
         DateTimeOffset? sinceUtc,
         Action<int>? onRowsRead = null)
@@ -166,14 +166,21 @@ public sealed class ZkEmKeeperClient : IDisposable
 
         _logger.LogInformation("Read {Count} log rows from device buffer", logs.Count);
 
+        var rowsInBuffer = logs.Count;
+        var excludedBeforeCursor = 0;
         if (sinceUtc.HasValue)
         {
             var before = logs.Count;
             logs = logs.Where(l => l.PunchAt > sinceUtc.Value).ToList();
-            _logger.LogInformation("After since {Since}: {Count} rows (dropped {Dropped})", sinceUtc.Value.ToString("u"), logs.Count, before - logs.Count);
+            excludedBeforeCursor = before - logs.Count;
+            _logger.LogInformation(
+                "After since {Since}: {Count} rows (dropped {Dropped})",
+                sinceUtc.Value.ToString("u"),
+                logs.Count,
+                excludedBeforeCursor);
         }
 
-        return logs.OrderBy(l => l.PunchAt).ToList();
+        return new ZkReadLogsResult(logs.OrderBy(l => l.PunchAt).ToList(), rowsInBuffer, excludedBeforeCursor);
     }
 
     /// <summary>Reads each enrolled user on the device and whether fingerprint / face templates exist.</summary>
