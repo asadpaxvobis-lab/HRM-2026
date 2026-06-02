@@ -112,18 +112,12 @@ const statusVariant = (s: string): 'warm' | 'outline' | 'secondary' => {
 const fmtTime = (iso: string | null) =>
   iso ? new Date(iso).toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit', hour12: true }) : '—'
 
-const requiredColumnHeaderClass =
-  'bg-amber-50/80 dark:bg-amber-950/25 text-amber-950 dark:text-amber-100 border-b-2 border-amber-300/80 dark:border-amber-700/50'
-const requiredCellMissingClass =
-  'bg-amber-50/70 dark:bg-amber-950/25 ring-1 ring-inset ring-amber-300/70 dark:ring-amber-700/50 text-amber-900 dark:text-amber-100 font-medium'
-const requiredInputClass =
-  'border-amber-300/80 bg-white focus-visible:ring-amber-400/40 dark:border-amber-700/60 dark:bg-background'
-const requiredFieldWrapClass =
-  'rounded-lg border border-amber-300/80 bg-amber-50/70 p-3 shadow-sm dark:border-amber-700/50 dark:bg-amber-950/20'
+const statusTableThClass =
+  'sticky top-0 z-10 bg-muted px-3 py-3 border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]'
 
 function CompulsoryColumnHeader({ label, className }: { label: string; className?: string }) {
   return (
-    <th className={cn('px-3 py-3', requiredColumnHeaderClass, className)}>
+    <th className={cn(statusTableThClass, className)}>
       {label} <span className="text-destructive font-bold">*</span>
     </th>
   )
@@ -139,13 +133,11 @@ function CompulsoryField({
   className?: string
 }) {
   return (
-    <div className={cn(requiredFieldWrapClass, className)}>
-      <div className="space-y-2">
-        <Label className="text-amber-950 dark:text-amber-100">
-          {label} <span className="text-destructive font-bold">*</span>
-        </Label>
-        {children}
-      </div>
+    <div className={cn('space-y-2', className)}>
+      <Label>
+        {label} <span className="text-destructive font-bold">*</span>
+      </Label>
+      {children}
     </div>
   )
 }
@@ -541,19 +533,19 @@ export function AttendancePage() {
         {people.length === 0 ? (
           <div className="px-6 pb-6 text-sm text-muted-foreground">No employees in this status.</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
+          <div className="overflow-auto max-h-[min(420px,55vh)] border-t isolate">
+            <table className="w-full text-sm border-collapse">
+              <thead className="text-xs uppercase text-muted-foreground">
                 <tr className="text-left">
-                  <th className="px-6 py-3">Employee</th>
-                  <th className="px-3 py-3">Shift</th>
-                  <th className="px-3 py-3">Status</th>
+                  <th className={cn(statusTableThClass, 'px-6')}>Employee</th>
+                  <th className={statusTableThClass}>Shift</th>
+                  <th className={statusTableThClass}>Status</th>
                   <CompulsoryColumnHeader label="In" />
                   <CompulsoryColumnHeader label="Out" />
                   <CompulsoryColumnHeader label="Worked" />
                   <CompulsoryColumnHeader label="Late (minutes)" />
                   <CompulsoryColumnHeader label="Overtime (hours)" />
-                  {canUpdate && <th className="px-3 py-3 w-10"></th>}
+                  {canUpdate && <th className={cn(statusTableThClass, 'w-10')}></th>}
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -561,9 +553,6 @@ export function AttendancePage() {
                   const d = byEmployee.get(e.id)
                   const m = rowMetrics(d, date)
                   const displayStatus = getDisplayStatus(d, date)
-                  const needsPunches = expectsPunches(displayStatus, d)
-                  const missingIn = needsPunches && !d?.first_in
-                  const missingOut = needsPunches && !d?.last_out
                   return (
                     <tr key={e.id} className="hover:bg-muted/20">
                       <td className="px-6 py-3">
@@ -591,15 +580,15 @@ export function AttendancePage() {
                       <td className="px-3 py-3">
                         <Badge variant={statusVariant(displayStatus)}>{displayStatus}</Badge>
                       </td>
-                      <td className={cn('px-3 py-3 tabular-nums', missingIn && requiredCellMissingClass)}>
+                      <td className="px-3 py-3 tabular-nums">
                         {fmtTime(d?.first_in ?? null)}
                       </td>
-                      <td className={cn('px-3 py-3 tabular-nums', missingOut && requiredCellMissingClass)}>
+                      <td className="px-3 py-3 tabular-nums">
                         {fmtTime(d?.last_out ?? null)}
                       </td>
                       <td className="px-3 py-3 tabular-nums">{fmtMinutes(m.worked_minutes, true)}</td>
                       <td className="px-3 py-3 tabular-nums">
-                        <span className={m.late_minutes > 0 ? 'text-amber-600 dark:text-amber-400 font-medium' : undefined}>
+                        <span className={m.late_minutes > 0 ? 'font-medium' : undefined}>
                           {minutesColumnValue(m.late_minutes, !!d?.first_in)}
                         </span>
                       </td>
@@ -692,7 +681,7 @@ export function AttendancePage() {
         <CardContent className="p-0">
           <p className="px-6 py-2 text-xs text-muted-foreground border-b bg-muted/20">
             Columns marked <span className="text-destructive font-bold">*</span> are required for working-day attendance.
-            Missing in/out times are highlighted in amber. Overtime shown is after shift end, minus late minutes.
+            Columns marked * are required for working-day attendance. Overtime is after shift end, minus late minutes.
           </p>
           {loading ? (
             <div className="p-16 grid place-items-center">
@@ -767,7 +756,6 @@ export function AttendancePage() {
                       type="datetime-local"
                       required
                       value={editForm.first_in}
-                      className={requiredInputClass}
                       onChange={(e) => patchEditTimes({ first_in: e.target.value })}
                       onInput={(e) => patchEditTimes({ first_in: e.currentTarget.value })}
                     />
@@ -777,7 +765,6 @@ export function AttendancePage() {
                       type="datetime-local"
                       required
                       value={editForm.last_out}
-                      className={requiredInputClass}
                       onChange={(e) => patchEditTimes({ last_out: e.target.value })}
                       onInput={(e) => patchEditTimes({ last_out: e.currentTarget.value })}
                     />
@@ -812,7 +799,7 @@ export function AttendancePage() {
                   required
                   readOnly={workingEditStatus}
                   value={editForm.late_minutes}
-                  className={cn(requiredInputClass, workingEditStatus && 'bg-muted/50 cursor-default')}
+                  className={workingEditStatus ? 'bg-muted/50 cursor-default' : undefined}
                   onChange={(e) => setEditForm({ ...editForm, late_minutes: Number(e.target.value) })}
                 />
                 <div className="text-[11px] text-muted-foreground">
@@ -828,7 +815,7 @@ export function AttendancePage() {
                   required
                   readOnly={workingEditStatus}
                   value={editForm.overtime_minutes}
-                  className={cn(requiredInputClass, workingEditStatus && 'bg-muted/50 cursor-default')}
+                  className={workingEditStatus ? 'bg-muted/50 cursor-default' : undefined}
                   onChange={(e) => setEditForm({ ...editForm, overtime_minutes: Number(e.target.value) })}
                 />
                 <div className="text-[11px] text-muted-foreground">
@@ -844,7 +831,7 @@ export function AttendancePage() {
                   required
                   readOnly={workingEditStatus}
                   value={editForm.worked_minutes}
-                  className={cn(requiredInputClass, workingEditStatus && 'bg-muted/50 cursor-default')}
+                  className={workingEditStatus ? 'bg-muted/50 cursor-default' : undefined}
                   onChange={(e) => setEditForm({ ...editForm, worked_minutes: Number(e.target.value) })}
                 />
                 <div className="text-[11px] text-muted-foreground">
@@ -914,7 +901,6 @@ export function AttendancePage() {
                 value={punchForm.employee_id}
                 onChange={(e) => setPunchForm({ ...punchForm, employee_id: e.target.value })}
                 required
-                className={requiredInputClass}
               >
                 <option value="">Select employee</option>
                 {employees.map((e) => (
@@ -930,7 +916,6 @@ export function AttendancePage() {
                   type="datetime-local"
                   required
                   value={punchForm.punch_at}
-                  className={requiredInputClass}
                   onChange={(e) => setPunchForm({ ...punchForm, punch_at: e.target.value })}
                 />
               </CompulsoryField>
