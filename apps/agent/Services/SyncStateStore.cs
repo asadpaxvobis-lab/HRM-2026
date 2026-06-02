@@ -12,7 +12,10 @@ public sealed class SyncStateStore
     public SyncStateStore(IOptions<AgentOptions> options)
     {
         _dir = string.IsNullOrWhiteSpace(options.Value.StateDirectory)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "HrmZktAgent", "state")
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "HrmZktAgent",
+                "state")
             : options.Value.StateDirectory;
         Directory.CreateDirectory(_dir);
     }

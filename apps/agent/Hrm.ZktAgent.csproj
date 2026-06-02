@@ -7,6 +7,7 @@
     <AssemblyName>Hrm.ZktAgent</AssemblyName>
     <Description>Windows worker — pulls ZKTeco K40 attendance over LAN (no ADMS) into Supabase.</Description>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <SupportedPlatform>windows</SupportedPlatform>
     <!-- ZKTime / Attendance Management Program registers 32-bit zkemkeeper only -->
     <PlatformTarget>x86</PlatformTarget>
     <RuntimeIdentifier>win-x86</RuntimeIdentifier>

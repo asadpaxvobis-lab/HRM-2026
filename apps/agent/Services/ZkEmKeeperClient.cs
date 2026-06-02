@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Hrm.ZktAgent.Models;
 using Microsoft.Extensions.Logging;
 
@@ -8,6 +9,7 @@ namespace Hrm.ZktAgent.Services;
 /// Reads attendance logs from ZKTeco terminals via zkemkeeper COM (installed with ZKTime / ZKBio).
 /// Works with K40 and other Standalone SDK devices on TCP 4370 — no ADMS required.
 /// </summary>
+[SupportedOSPlatform("windows")]
 public sealed class ZkEmKeeperClient : IDisposable
 {
     private static readonly string[] ProgIds =
@@ -142,8 +144,9 @@ public sealed class ZkEmKeeperClient : IDisposable
 
         var results = new List<ZkUserBioStatus>();
         var supportsFace = true;
+        dynamic zk = _zk;
 
-        if (!(bool)_zk.ReadAllUserID(machineNumber))
+        if (!(bool)zk.ReadAllUserID(machineNumber))
         {
             _logger.LogWarning("ReadAllUserID returned false; bio scan may be incomplete (error {Err})", SafeGetLastError());
         }

@@ -222,15 +222,42 @@ public sealed class SupabaseHrmClient
         {
             body["agent_sync_notes"] = notes;
         }
+
+        if (await PatchDeviceAsync(url, body, ct))
+        {
+            return;
+        }
+
+        // Supabase without APPLY_PENDING_DEVICES.sql — still update sync notes / last seen
+        var fallback = new Dictionary<string, object?>();
+        if (connected)
+        {
+            fallback["last_seen_at"] = DateTimeOffset.UtcNow;
+        }
+        if (!string.IsNullOrWhiteSpace(notes))
+        {
+            fallback["agent_sync_notes"] = notes;
+        }
+        if (fallback.Count > 0)
+        {
+            await PatchDeviceAsync(url, fallback, ct);
+        }
+    }
+
+    private async Task<bool> PatchDeviceAsync(string url, Dictionary<string, object?> body, CancellationToken ct)
+    {
         var payload = JsonSerializer.Serialize(body, JsonOpts);
         using var req = CreateRequest(HttpMethod.Patch, url);
         req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         using var res = await _http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode)
+        if (res.IsSuccessStatusCode)
         {
-            var body = await res.Content.ReadAsStringAsync(ct);
-            _logger.LogWarning("UpdateDeviceConnectStatus failed ({Status}): {Body}", res.StatusCode, body);
+            return true;
         }
+
+        var errorBody = await res.Content.ReadAsStringAsync(ct);
+        _logger.LogWarning("Device PATCH failed ({Status}): {Body}", res.StatusCode, errorBody);
+        return false;
     }
 
     private static DateTimeOffset? ParseAgentSyncTime(DateTime? value)
