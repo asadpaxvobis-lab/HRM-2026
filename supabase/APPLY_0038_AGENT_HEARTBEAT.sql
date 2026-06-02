@@ -19,4 +19,4 @@ ALTER TABLE public.zkt_agent_heartbeat ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS zkt_agent_heartbeat_select ON public.zkt_agent_heartbeat;
 CREATE POLICY zkt_agent_heartbeat_select ON public.zkt_agent_heartbeat
   FOR SELECT TO authenticated
-  USING (company_id = public.current_company_id());
+  USING (company_id = public.current_user_company_id());
