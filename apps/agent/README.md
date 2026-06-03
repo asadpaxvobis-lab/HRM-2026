@@ -30,6 +30,15 @@ K40 (192.168.x.x:4370)  →  zkemkeeper COM  →  Hrm.ZktAgent  →  Supabase at
 | HRM device row | **Admin → Devices** → ZKTeco, **IP** filled (e.g. `192.168.18.199`) |
 | Employees | **Device PIN** = user ID on the device |
 
+## Start from HRM web (Admin → Devices → **Run agent**)
+
+On the **office PC** (HRM open at `http://localhost:5173`):
+
+1. Run setup once: `powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1` (registers `hrm-agent://` URL).
+2. Leave launcher running (recommended): `powershell -ExecutionPolicy Bypass -File .\agent-launcher.ps1`  
+   Or from repo root: `npm run launcher:agent`
+3. In HRM **Admin → Devices**, click **Run agent** — opens `run-agent.ps1` in a new PowerShell window.
+
 ## Setup
 
 1. Run migration `supabase/migrations/0035_zkt_agent_sync.sql` in Supabase SQL Editor.

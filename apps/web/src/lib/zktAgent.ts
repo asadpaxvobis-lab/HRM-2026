@@ -2,6 +2,97 @@ const STORAGE_KEY = 'hrm_zkt_agent_url'
 
 const DEFAULT_AGENT_URL = import.meta.env.VITE_ZKT_AGENT_URL ?? 'http://127.0.0.1:17880'
 
+const DEFAULT_LAUNCHER_URL =
+  import.meta.env.VITE_ZKT_AGENT_LAUNCHER_URL ?? 'http://127.0.0.1:17879'
+
+export function getZktAgentLauncherUrl(): string {
+  return DEFAULT_LAUNCHER_URL.replace(/\/$/, '')
+}
+
+export type ZktAgentLaunchResult = {
+  ok: boolean
+  started?: boolean
+  alreadyRunning?: boolean
+  message?: string
+  error?: string
+  method?: 'launcher' | 'protocol'
+}
+
+/** Opens hrm-agent://start (registered by setup-agent.ps1 on the office PC). */
+export function launchZktAgentViaProtocol(): void {
+  if (typeof window === 'undefined') return
+  const iframe = document.createElement('iframe')
+  iframe.style.display = 'none'
+  iframe.src = 'hrm-agent://start'
+  document.body.appendChild(iframe)
+  window.setTimeout(() => iframe.remove(), 3000)
+}
+
+export async function pingZktAgentLauncher(launcherUrl = getZktAgentLauncherUrl()): Promise<boolean> {
+  try {
+    const res = await fetch(`${launcherUrl}/health`, { signal: AbortSignal.timeout(2500) })
+    if (!res.ok) return false
+    const data = (await res.json()) as { ok?: boolean }
+    return data.ok === true
+  } catch {
+    return false
+  }
+}
+
+export async function startZktAgentViaLauncher(
+  launcherUrl = getZktAgentLauncherUrl()
+): Promise<ZktAgentLaunchResult> {
+  try {
+    const res = await fetch(`${launcherUrl}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    })
+    const data = (await res.json()) as ZktAgentLaunchResult & { error?: string }
+    if (!res.ok && !data.ok) {
+      return { ok: false, error: data.error ?? `Launcher returned ${res.status}` }
+    }
+    return { ...data, ok: true, method: 'launcher' }
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : 'Could not reach agent launcher on this PC',
+    }
+  }
+}
+
+/** Try HTTP launcher first, then custom URL protocol. */
+export async function runZktAgentOnOfficePc(): Promise<ZktAgentLaunchResult> {
+  const launcherUp = await pingZktAgentLauncher()
+  if (launcherUp) {
+    const r = await startZktAgentViaLauncher()
+    if (r.ok) return r
+  }
+  launchZktAgentViaProtocol()
+  return {
+    ok: true,
+    started: true,
+    message:
+      'Sent start request via hrm-agent://. If the window closes instantly, run setup-agent.ps1 once, then npm run launcher:agent.',
+    method: 'protocol',
+  }
+}
+
+/** Poll agent /health until online or timeout. */
+export async function waitForZktAgentOnline(
+  agentUrl = getZktAgentUrl(),
+  options?: { timeoutMs?: number; pollMs?: number }
+): Promise<boolean> {
+  const timeoutMs = options?.timeoutMs ?? 90_000
+  const pollMs = options?.pollMs ?? 1500
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (await pingZktAgent(agentUrl)) return true
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
+  return false
+}
+
 /** Corrects common typo 17888 → 17880 and persists the fix. */
 export function normalizeZktAgentUrl(url: string): string {
   const trimmed = url.trim().replace(/\/$/, '')

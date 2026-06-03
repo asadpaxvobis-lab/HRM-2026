@@ -18,6 +18,7 @@
     "build:api": "dotnet build apps/api/Hrm.Api.csproj",
     "setup:agent": "powershell -ExecutionPolicy Bypass -File apps/agent/setup-agent.ps1",
     "dev:agent": "powershell -ExecutionPolicy Bypass -File apps/agent/run-agent.ps1",
+    "launcher:agent": "powershell -ExecutionPolicy Bypass -File apps/agent/agent-launcher.ps1",
     "build:agent": "dotnet build apps/agent/Hrm.ZktAgent.csproj -c Release -r win-x86"
   },
   "packageManager": "npm@10.0.0",

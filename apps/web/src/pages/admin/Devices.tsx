@@ -13,6 +13,7 @@ import {
   Download,
   Users,
   FileText,
+  Play,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import {
@@ -25,7 +26,9 @@ import {
   type ZktDeviceLanStatus,
   resetZktAgentSync,
   runZktAgentSyncWithProgress,
+  runZktAgentOnOfficePc,
   setZktAgentUrl,
+  waitForZktAgentOnline,
   type ZktSyncProgress,
 } from '@/lib/zktAgent'
 import { loadAllDevicePinRows } from '@/lib/employeeDevicePin'
@@ -201,6 +204,7 @@ export function DevicesPage() {
   const [form, setForm] = useState(emptyForm)
   const [busy, setBusy] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
+  const [agentStartBusy, setAgentStartBusy] = useState(false)
   const [agentUrl, setAgentUrl] = useState(() => getZktAgentUrl())
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [zkSdkReady, setZkSdkReady] = useState<boolean | null>(null)
@@ -362,6 +366,46 @@ export function DevicesPage() {
   const mappedWithPin = pinEmployees.filter((e) => e.device_pin != null && e.device_pin > 0)
   const missingPin = pinEmployees.filter((e) => e.device_pin == null || e.device_pin <= 0)
   const pinByNumber = new Map(mappedWithPin.map((e) => [e.device_pin!, e]))
+
+  async function runAgent() {
+    if (!onOfficePc) {
+      toast.error('Run agent works on the office PC only', {
+        description:
+          'Open HRM at http://localhost:5173 on the same PC as ZKTime, then use Run agent.',
+      })
+      return
+    }
+    if (agentOnline) {
+      toast.info('Agent is already running', {
+        description: 'Use Test agent & LAN or Pull from device.',
+      })
+      return
+    }
+    setAgentStartBusy(true)
+    try {
+      const launch = await runZktAgentOnOfficePc()
+      if (!launch.ok) {
+        toast.error('Could not start agent', { description: launch.error })
+        return
+      }
+      toast.success(launch.message ?? 'Starting agent…', {
+        description: 'A PowerShell window should open. Leave it open.',
+      })
+      const online = await waitForZktAgentOnline(agentUrl, { timeoutMs: 90_000, pollMs: 2000 })
+      if (online) {
+        toast.success('Agent is online')
+        await checkAgent()
+        void refreshAgentStatus()
+      } else {
+        toast.error('Agent did not respond yet', {
+          description:
+            'If the PowerShell window closed instantly, open apps\\agent and run: .\\setup-agent.ps1 then .\\run-agent-window.ps1',
+        })
+      }
+    } finally {
+      setAgentStartBusy(false)
+    }
+  }
 
   async function checkAgent() {
     const health = await fetchZktAgentHealth(agentUrl)
@@ -633,6 +677,20 @@ export function DevicesPage() {
               Test agent &amp; LAN
             </Button>
             <HasPermission perm="attendance.device">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={agentStartBusy || agentOnline === true}
+                onClick={() => void runAgent()}
+                title="Starts run-agent.ps1 on this PC (office PC with ZKTime)"
+              >
+                {agentStartBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+                Run agent
+              </Button>
               <Button variant="outline" size="sm" disabled={syncBusy} onClick={() => void resetSyncCursor()}>
                 Reset sync cursor
               </Button>
@@ -676,11 +734,15 @@ export function DevicesPage() {
             ) : null}
             {agentOnline === false ? (
               <p className="w-full text-xs text-muted-foreground">
-                On the office PC (same machine as ZKTime): open PowerShell in{' '}
-                <code className="text-foreground">apps\agent</code>, run{' '}
+                On the office PC: click <strong>Run agent</strong> above (runs{' '}
+                <code className="text-foreground">run-agent.ps1</code>), or open PowerShell in{' '}
+                <code className="text-foreground">apps\agent</code> and run{' '}
                 <code className="text-foreground">.\setup-agent.ps1</code> once, then{' '}
-                <code className="text-foreground">.\run-agent.ps1</code> and leave the window open. Use{' '}
-                <code className="text-foreground">http://127.0.0.1:17880</code> if HRM runs on that PC.
+                <code className="text-foreground">.\run-agent.ps1</code>. For the button, also run{' '}
+                <code className="text-foreground">Start-Launcher.cmd</code> (double-click) or{' '}
+                <code className="text-foreground">& .\agent-launcher.ps1</code> in this folder — not{' '}
+                <code className="text-foreground">powershell -File</code> inside PowerShell (Access denied). Agent URL:{' '}
+                <code className="text-foreground">http://127.0.0.1:17880</code>.
               </p>
             ) : null}
             {agentOnline && zkSdkReady === false ? (

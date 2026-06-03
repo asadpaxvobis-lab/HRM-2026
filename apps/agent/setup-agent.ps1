@@ -102,7 +102,13 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+& "$PSScriptRoot\register-agent-protocol.ps1"
+Ensure-UrlAcl 17879 | Out-Null
+
 Write-Host "`nSetup complete. Start the agent with:" -ForegroundColor Green
 Write-Host "  powershell -ExecutionPolicy Bypass -File .\run-agent.ps1`n" -ForegroundColor White
+Write-Host "Or from HRM web: Admin -> Devices -> Run agent (office PC only)." -ForegroundColor DarkGray
+Write-Host "Optional background launcher (for Run agent button):" -ForegroundColor DarkGray
+Write-Host "  powershell -ExecutionPolicy Bypass -File .\agent-launcher.ps1`n" -ForegroundColor White
 Write-Host "Then in HRM: Admin -> Devices -> Test agent (http://127.0.0.1:17880)" -ForegroundColor DarkGray
 Write-Host "Also run migration APPLY_0035_ZKT_AGENT.sql in Supabase SQL Editor if not done yet.`n" -ForegroundColor DarkGray
