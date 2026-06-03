@@ -84,8 +84,17 @@ BEGIN
 
   v_basic := COALESCE(v_basic, 0);
   v_currency := COALESCE(v_currency, 'PKR');
-  v_hourly := ROUND(v_basic / 208.0, 2);
-  v_request_amount := ROUND(COALESCE(p_planned_hours, 0) * v_hourly * COALESCE(p_rate_multiplier, 1.5), 2);
+  v_hourly := ROUND(
+    v_basic / (
+      EXTRACT(DAY FROM (date_trunc('month', p_ot_date::timestamp) + interval '1 month' - interval '1 day'))::numeric
+      * 8
+    ),
+    2
+  );
+  v_request_amount := ROUND(
+    COALESCE(p_planned_hours, 0) * v_hourly * COALESCE(NULLIF(p_rate_multiplier, 0), 1.0),
+    2
+  );
 
   v_month_start := date_trunc('month', p_ot_date)::date;
   v_month_end := (date_trunc('month', p_ot_date) + interval '1 month' - interval '1 day')::date;

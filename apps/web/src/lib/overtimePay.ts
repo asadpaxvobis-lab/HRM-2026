@@ -18,7 +18,41 @@ export type OtPayContext = {
   error?: string
 }
 
-/** Preferred: server RPC (works for employees + admin). Falls back to direct salary read. */
+export type OtPayComputed = {
+  basic: number
+  currency: string
+  hourly_rate: number
+  request_amount: number
+}
+
+/** Always uses client formula: basic ÷ (month days × 8) × hours × multiplier */
+export async function computeOtPayAmount(
+  supabase: SupabaseClient,
+  employeeId: string,
+  otDate: string,
+  plannedHours: number,
+  rateMultiplier: number
+): Promise<{ data: OtPayComputed | null; error: string | null }> {
+  const pay = await fetchEmployeeBasicPay(supabase, employeeId, otDate)
+  if (pay.error) return { data: null, error: pay.error }
+  if (!pay.data || pay.data.basic <= 0) return { data: null, error: null }
+
+  const mult = rateMultiplier > 0 ? rateMultiplier : 1
+  const hourly_rate = hourlyRateFromBasic(pay.data.basic, otDate)
+  const request_amount = overtimePayAmount(plannedHours, hourly_rate, mult)
+
+  return {
+    data: {
+      basic: pay.data.basic,
+      currency: pay.data.currency,
+      hourly_rate,
+      request_amount,
+    },
+    error: null,
+  }
+}
+
+/** Salary + month totals from RPC when available; pay amount always from client formula. */
 export async function fetchOtPayContext(
   supabase: SupabaseClient,
   employeeId: string,
@@ -27,54 +61,42 @@ export async function fetchOtPayContext(
   rateMultiplier: number,
   excludeRequestId?: string | null
 ): Promise<{ data: OtPayContext | null; error: string | null }> {
+  const mult = rateMultiplier > 0 ? rateMultiplier : 1
+  const local = await computeOtPayAmount(supabase, employeeId, otDate, plannedHours, mult)
+  if (local.error) return { data: null, error: local.error }
+  if (!local.data) return { data: null, error: null }
+
+  let month_hours = 0
+  let month_amount = 0
+
   const { data, error } = await supabase.rpc('get_ot_pay_context', {
     p_employee_id: employeeId,
     p_ot_date: otDate,
     p_planned_hours: plannedHours,
-    p_rate_multiplier: rateMultiplier,
+    p_rate_multiplier: mult,
     p_exclude_request_id: excludeRequestId ?? null,
   })
 
   if (!error && data && typeof data === 'object' && (data as OtPayContext).ok) {
     const ctx = data as OtPayContext
-    return {
-      data: {
-        ok: true,
-        basic: Number(ctx.basic ?? 0),
-        currency: String(ctx.currency ?? 'PKR'),
-        hourly_rate: Number(ctx.hourly_rate ?? 0),
-        request_amount: Number(ctx.request_amount ?? 0),
-        month_hours: Number(ctx.month_hours ?? 0),
-        month_amount: Number(ctx.month_amount ?? 0),
-        month_total_hours: Number(ctx.month_total_hours ?? 0),
-        month_total_amount: Number(ctx.month_total_amount ?? 0),
-      },
-      error: null,
-    }
-  }
-
-  if (error && !error.message.includes('Could not find the function')) {
+    month_hours = Number(ctx.month_hours ?? 0)
+    month_amount = Number(ctx.month_amount ?? 0)
+  } else if (error && !error.message.includes('Could not find the function')) {
     return { data: null, error: error.message }
   }
 
-  const pay = await fetchEmployeeBasicPay(supabase, employeeId, otDate)
-  if (pay.error) return { data: null, error: pay.error }
-  if (!pay.data || pay.data.basic <= 0) return { data: null, error: null }
-
-  const hourly_rate = hourlyRateFromBasic(pay.data.basic)
-  const request_amount = overtimePayAmount(plannedHours, hourly_rate, rateMultiplier)
-
+  const request_amount = local.data.request_amount
   return {
     data: {
       ok: true,
-      basic: pay.data.basic,
-      currency: pay.data.currency,
-      hourly_rate,
+      basic: local.data.basic,
+      currency: local.data.currency,
+      hourly_rate: local.data.hourly_rate,
       request_amount,
-      month_hours: 0,
-      month_amount: 0,
-      month_total_hours: plannedHours,
-      month_total_amount: request_amount,
+      month_hours,
+      month_amount,
+      month_total_hours: month_hours + plannedHours,
+      month_total_amount: month_amount + request_amount,
     },
     error: null,
   }
@@ -136,12 +158,32 @@ export async function fetchEmployeeBasicPay(
   }
 }
 
-/** Standard monthly working hours for hourly rate (26 days × 8 hours). */
-export const MONTHLY_WORKING_HOURS = 26 * 8
+/** Standard hours per day (matches payroll OT spreadsheet). */
+export const DAILY_WORKING_HOURS = 8
 
-export function hourlyRateFromBasic(basic: number): number {
+/** Calendar days in the month of the OT date (e.g. June → 30). */
+export function calendarDaysInMonth(isoDate: string): number {
+  const [y, m] = isoDate.slice(0, 10).split('-').map(Number)
+  return new Date(y, m, 0).getDate()
+}
+
+/** Month denominator: month days × daily working hours (e.g. 30 × 8 = 240). */
+export function monthlyWorkingHoursForDate(isoDate: string, dailyHours = DAILY_WORKING_HOURS): number {
+  return calendarDaysInMonth(isoDate) * dailyHours
+}
+
+/** Hourly rate = basic salary ÷ (month days × hours per day). */
+export function hourlyRateFromBasic(basic: number, otDate: string, dailyHours = DAILY_WORKING_HOURS): number {
   if (!basic || basic <= 0) return 0
-  return Math.round((basic / MONTHLY_WORKING_HOURS) * 100) / 100
+  const monthHours = monthlyWorkingHoursForDate(otDate, dailyHours)
+  if (monthHours <= 0) return 0
+  return Math.round((basic / monthHours) * 100) / 100
+}
+
+/** Human-readable formula for UI (e.g. 400,000 ÷ (30 × 8) × 3.33 h). */
+export function overtimePayFormulaLabel(isoDate: string, dailyHours = DAILY_WORKING_HOURS): string {
+  const days = calendarDaysInMonth(isoDate)
+  return `basic ÷ (${days} days × ${dailyHours} h) × OT hours × multiplier`
 }
 
 export function overtimePayAmount(hours: number, hourlyRate: number, multiplier: number): number {

@@ -30,11 +30,15 @@ import {
 } from '@/components/ui/dialog'
 import { toast } from 'sonner'
 import {
+  calendarDaysInMonth,
+  DAILY_WORKING_HOURS,
   fetchOtPayContext,
   formatPkr,
   overtimePayAmount,
+  overtimePayFormulaLabel,
   type OtPayContext,
 } from '@/lib/overtimePay'
+import { defaultMultiplierForType } from '@/lib/overtimeTypes'
 
 type OT = {
   id: string
@@ -71,13 +75,6 @@ const statusVariant = (s: OT['status']) =>
         : s === 'REJECTED' || s === 'CANCELLED'
           ? 'destructive'
           : 'outline'
-
-const otTypeRate: Record<OT['ot_type'], number> = {
-  NORMAL: 1.5,
-  WEEKEND: 2.0,
-  HOLIDAY: 2.5,
-  NIGHT: 2.0,
-}
 
 function OtPayEstimateCard({
   loading,
@@ -124,7 +121,9 @@ function OtPayEstimateCard({
           <span className="font-medium tabular-nums">{formatPkr(pay.basic, pay.currency)}</span>
         </div>
         <div className="flex justify-between gap-2">
-          <span className="text-muted-foreground">Hourly rate</span>
+          <span className="text-muted-foreground">
+            Hourly rate ({calendarDaysInMonth(otDate)} × {DAILY_WORKING_HOURS} h)
+          </span>
           <span className="font-medium tabular-nums">{formatPkr(pay.hourly_rate, pay.currency)}</span>
         </div>
         <div className="flex justify-between gap-2">
@@ -164,7 +163,7 @@ const emptyForm = {
   end_time: '',
   planned_hours: 1,
   ot_type: 'NORMAL' as OT['ot_type'],
-  rate_multiplier: 1.5,
+  rate_multiplier: 1.0,
   reason: '',
 }
 
@@ -362,7 +361,7 @@ export function OvertimePage() {
 
   // Auto-set rate multiplier when ot_type changes
   useEffect(() => {
-    setForm((f) => ({ ...f, rate_multiplier: otTypeRate[f.ot_type] }))
+    setForm((f) => ({ ...f, rate_multiplier: defaultMultiplierForType(f.ot_type) }))
   }, [form.ot_type])
 
   async function submit() {
@@ -737,7 +736,7 @@ export function OvertimePage() {
                   value={form.ot_type}
                   onChange={(e) => setForm({ ...form, ot_type: e.target.value as OT['ot_type'] })}
                 >
-                  <option value="NORMAL">Normal weekday (×1.5)</option>
+                  <option value="NORMAL">Normal weekday (×1.0)</option>
                   <option value="WEEKEND">Weekend (×2.0)</option>
                   <option value="HOLIDAY">Public holiday (×2.5)</option>
                   <option value="NIGHT">Night shift (×2.0)</option>
@@ -795,8 +794,9 @@ export function OvertimePage() {
               <CardHeader className="pb-2 pt-4">
                 <CardTitle className="text-sm">Overtime pay estimate</CardTitle>
                 <CardDescription className="text-xs">
-                  Based on basic salary ÷ 208 hrs/month. Totals include this request for{' '}
-                  {form.ot_date.slice(0, 7)}.
+                  {overtimePayFormulaLabel(form.ot_date)} —{' '}
+                  {calendarDaysInMonth(form.ot_date)} days × {DAILY_WORKING_HOURS} h this month. Totals include
+                  this request for {form.ot_date.slice(0, 7)}.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pb-4">

@@ -40,6 +40,7 @@ type Loan = {
   id: string
   loan_no: string
   employee_id: string
+  approver_id: string | null
   loan_type_code: string | null
   loan_type_name: string | null
   purpose: string
@@ -54,7 +55,11 @@ type Loan = {
   status: 'REQUESTED' | 'APPROVED' | 'REJECTED' | 'ACTIVE' | 'CLOSED' | 'CANCELLED'
   requested_at: string
   employees?: { employee_code: string; full_name: string }
+  approver?: { full_name: string | null; email: string } | null
 }
+
+type EmployeeOption = { id: string; employee_code: string; full_name: string }
+type UserOption = { id: string; email: string; full_name: string | null }
 
 type LoanType = {
   id: string
@@ -106,8 +111,13 @@ export function LoansPage() {
   const [types, setTypes] = useState<LoanType[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
+  const [giveMode, setGiveMode] = useState(false)
+  const [employees, setEmployees] = useState<EmployeeOption[]>([])
+  const [approverUsers, setApproverUsers] = useState<UserOption[]>([])
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({
+    employee_id: '',
+    approver_id: '',
     loan_type_id: '',
     purpose: '',
     principal_amount: 0,
@@ -116,12 +126,52 @@ export function LoansPage() {
     start_date: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString().slice(0, 10),
   })
 
+  const openLoanDialog = (forAnyEmployee: boolean) => {
+    setGiveMode(forAnyEmployee)
+    setForm((f) => ({
+      ...f,
+      employee_id: forAnyEmployee ? '' : (appUser?.employee_id ?? ''),
+      approver_id: '',
+      loan_type_id: '',
+      purpose: '',
+      principal_amount: 0,
+      installments: 3,
+    }))
+    setOpen(true)
+  }
+
+  async function loadApproverUsers() {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, email, full_name')
+      .eq('status', 'Active')
+      .order('full_name')
+    if (error) {
+      toast.error('Failed to load users', { description: error.message })
+      return
+    }
+    setApproverUsers((data ?? []) as UserOption[])
+  }
+
+  async function loadEmployees() {
+    const { data, error } = await supabase
+      .from('employees')
+      .select('id, employee_code, full_name')
+      .eq('is_active', true)
+      .order('full_name')
+    if (error) {
+      toast.error('Failed to load employees', { description: error.message })
+      return
+    }
+    setEmployees((data ?? []) as EmployeeOption[])
+  }
+
   async function load() {
     setLoading(true)
     let q = supabase
       .from('loans')
       .select(
-        'id, loan_no, employee_id, loan_type_code, loan_type_name, purpose, principal_amount, interest_rate_pct, installments, monthly_installment, total_payable, outstanding_amount, paid_amount, start_date, status, requested_at, employees(employee_code, full_name)'
+        'id, loan_no, employee_id, approver_id, loan_type_code, loan_type_name, purpose, principal_amount, interest_rate_pct, installments, monthly_installment, total_payable, outstanding_amount, paid_amount, start_date, status, requested_at, employees(employee_code, full_name), approver:users!loans_approver_id_fkey(full_name, email)'
       )
       .order('requested_at', { ascending: false })
       .limit(200)
@@ -130,6 +180,7 @@ export function LoansPage() {
       q = q.eq('employee_id', appUser.employee_id)
     } else if (tab === 'pending') {
       q = q.eq('status', 'REQUESTED')
+      if (appUser?.id) q = q.eq('approver_id', appUser.id)
     } else if (tab === 'active') {
       q = q.in('status', ['APPROVED', 'ACTIVE'])
     }
@@ -143,6 +194,7 @@ export function LoansPage() {
       const mapped = (ld ?? []).map((r: Record<string, unknown>) => ({
         ...(r as object),
         employees: Array.isArray(r.employees) ? (r.employees as unknown[])[0] : r.employees,
+        approver: Array.isArray(r.approver) ? (r.approver as unknown[])[0] : r.approver,
       })) as Loan[]
       setLoans(mapped)
     }
@@ -154,9 +206,16 @@ export function LoansPage() {
     void load()
   }, [tab])
 
+  useEffect(() => {
+    if (open) {
+      void loadApproverUsers()
+      if (giveMode) void loadEmployees()
+    }
+  }, [open, giveMode])
+
   const tabs: { id: Tab; label: string; visible: boolean }[] = [
     { id: 'mine', label: 'My loans', visible: !!appUser?.employee_id },
-    { id: 'pending', label: 'Pending approvals', visible: canApprove },
+    { id: 'pending', label: 'Sent to me for approval', visible: true },
     { id: 'active', label: 'Active', visible: canApprove || canView },
     { id: 'all', label: 'All', visible: canApprove || canView },
   ]
@@ -196,8 +255,14 @@ export function LoansPage() {
 
   const createLoan = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!appUser?.employee_id) {
-      toast.error('Your user account is not linked to an employee record')
+    if (!appUser) return
+    const employeeId = giveMode ? form.employee_id : appUser.employee_id
+    if (!employeeId) {
+      toast.error(giveMode ? 'Select an employee' : 'Your user account is not linked to an employee record')
+      return
+    }
+    if (!form.approver_id) {
+      toast.error('Select a user to send for approval')
       return
     }
     const t = types.find((x) => x.id === form.loan_type_id)
@@ -234,7 +299,9 @@ export function LoansPage() {
     const payload = {
       company_id: appUser.company_id,
       loan_no,
-      employee_id: appUser.employee_id,
+      employee_id: employeeId,
+      approver_id: form.approver_id,
+      requested_by: appUser.id,
       loan_type_id: t?.id ?? null,
       loan_type_code: t?.code ?? null,
       loan_type_name: t?.name ?? null,
@@ -256,7 +323,7 @@ export function LoansPage() {
       return
     }
     await writeAuditLog({ action: 'CREATE', entityType: 'loan', entityId: data?.id, after: payload })
-    toast.success('Loan request submitted')
+    toast.success(giveMode ? 'Loan sent for approval' : 'Loan request submitted')
     setOpen(false)
     navigate(`/loans/${data?.id}`)
   }
@@ -274,8 +341,17 @@ export function LoansPage() {
             <Button variant="outline" size="sm" onClick={() => navigate('/loans/types')}>
               Loan types
             </Button>
+            {canApprove && (
+              <Button size="sm" onClick={() => openLoanDialog(true)}>
+                <Plus className="h-4 w-4" /> Give loan
+              </Button>
+            )}
             {canCreate && appUser?.employee_id && (
-              <Button size="sm" onClick={() => setOpen(true)}>
+              <Button
+                size="sm"
+                variant={canApprove ? 'outline' : 'default'}
+                onClick={() => openLoanDialog(false)}
+              >
                 <Plus className="h-4 w-4" /> Request loan
               </Button>
             )}
@@ -335,7 +411,7 @@ export function LoansPage() {
               No loans here yet.
               {tab === 'mine' && canCreate && appUser?.employee_id && (
                 <div className="mt-4">
-                  <Button size="sm" onClick={() => setOpen(true)}>
+                  <Button size="sm" onClick={() => openLoanDialog(false)}>
                     <Plus className="h-4 w-4" /> Request your first loan
                   </Button>
                 </div>
@@ -389,13 +465,49 @@ export function LoansPage() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Request a loan</DialogTitle>
+            <DialogTitle>{giveMode ? 'Give loan to employee' : 'Request a loan'}</DialogTitle>
             <DialogDescription>
-              Pick a type, amount and tenure. Preview the installment schedule before submitting.
+              {giveMode
+                ? 'Choose employee, loan details, installments, and which user should approve.'
+                : 'Choose loan details and which user should approve. Preview installments before submitting.'}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={createLoan} className="space-y-4">
             <div className="grid sm:grid-cols-2 gap-4">
+              {giveMode && (
+                <div className="space-y-2 sm:col-span-2">
+                  <Label>Employee</Label>
+                  <Select
+                    required
+                    value={form.employee_id}
+                    onChange={(e) => setForm({ ...form, employee_id: e.target.value })}
+                  >
+                    <option value="">Select employee…</option>
+                    {employees.map((emp) => (
+                      <option key={emp.id} value={emp.id}>
+                        {emp.employee_code} — {emp.full_name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              )}
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Send for approval to</Label>
+                <Select
+                  required
+                  value={form.approver_id}
+                  onChange={(e) => setForm({ ...form, approver_id: e.target.value })}
+                >
+                  <option value="">Select user…</option>
+                  {approverUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.full_name ?? u.email}
+                      {u.id === appUser?.id ? ' (you)' : ''}
+                    </option>
+                  ))}
+                </Select>
+                <p className="text-xs text-muted-foreground">Active users in your company.</p>
+              </div>
               <div className="space-y-2">
                 <Label>Loan type</Label>
                 <Select required value={form.loan_type_id} onChange={(e) => onTypeChange(e.target.value)}>
@@ -492,7 +604,10 @@ export function LoansPage() {
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={busy || !preview || form.principal_amount <= 0}>
+              <Button
+                type="submit"
+                disabled={busy || !preview || form.principal_amount <= 0 || !form.approver_id}
+              >
                 {busy && <Loader2 className="h-4 w-4 animate-spin" />}
                 Submit request
               </Button>

@@ -49,7 +49,10 @@ const navSections: NavSection[] = [
       { label: 'Attendance', to: '/attendance', perm: 'attendance.view' },
       { label: 'Corrections', to: '/attendance/corrections', perm: 'attendance.view' },
       { label: 'Overtime taken', to: '/overtime/taken', perm: 'overtime.view' },
+      { label: 'Overtime Approval', to: '/overtime/approval', perm: 'overtime.view' },
+      { label: 'OT type & rate', to: '/overtime/edit-type', perm: 'overtime.approve' },
       { label: 'Overtime', to: '/overtime', perm: 'overtime.view' },
+      { label: 'Overtime report', to: '/reports/overtime', perm: 'overtime.view' },
     ],
   },
   {

@@ -95,7 +95,7 @@ BEGIN
   v_multiplier := CASE v_ot_type
     WHEN 'HOLIDAY' THEN 2.5
     WHEN 'WEEKEND' THEN 2.0
-    ELSE 1.5
+    ELSE 1.0
   END;
 
   v_start := CASE WHEN p_first_in IS NOT NULL THEN (p_first_in AT TIME ZONE v_tz)::time ELSE NULL END;
@@ -118,7 +118,13 @@ BEGIN
   END IF;
 
   v_basic := COALESCE(v_basic, 0);
-  v_hourly := ROUND(v_basic / 208.0, 2);
+  v_hourly := ROUND(
+    v_basic / (
+      EXTRACT(DAY FROM (date_trunc('month', p_date::timestamp) + interval '1 month' - interval '1 day'))::numeric
+      * 8
+    ),
+    2
+  );
   v_amount := ROUND(v_hours * v_hourly * v_multiplier, 2);
 
   IF v_existing.id IS NOT NULL AND v_existing.status = 'PENDING' THEN

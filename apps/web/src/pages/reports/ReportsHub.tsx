@@ -7,6 +7,7 @@ import {
   ShieldCheck,
   CalendarOff,
   Banknote,
+  Timer,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { PageHeader } from '@/components/master/PageHeader'
@@ -87,6 +88,14 @@ const reports: Report[] = [
     icon: Landmark,
     perm: 'loan.view',
     tone: 'slate',
+  },
+  {
+    label: 'Overtime report',
+    description: 'Date-wise and employee-wise overtime hours, amount, type and approver.',
+    to: '/reports/overtime',
+    icon: Timer,
+    perm: 'overtime.view',
+    tone: 'amber',
   },
 ]
 

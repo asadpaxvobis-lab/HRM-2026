@@ -54,10 +54,12 @@ type Loan = {
   requested_at: string
   decided_at: string | null
   decision_note: string | null
+  approver_id: string | null
   disbursed_at: string | null
   closed_at: string | null
   notes: string | null
   employees?: { employee_code: string; full_name: string; email: string | null }
+  approver?: { full_name: string | null; email: string } | null
 }
 
 type Installment = {
@@ -114,7 +116,7 @@ export function LoanDetailPage() {
     const [{ data: l, error: le }, { data: ins, error: ie }] = await Promise.all([
       supabase
         .from('loans')
-        .select('*, employees(employee_code, full_name, email)')
+        .select('*, employees(employee_code, full_name, email), approver:users!loans_approver_id_fkey(full_name, email)')
         .eq('id', id)
         .single(),
       supabase
@@ -134,6 +136,9 @@ export function LoanDetailPage() {
       employees: Array.isArray((l as Record<string, unknown>)?.employees)
         ? ((l as Record<string, unknown>)?.employees as unknown[])[0]
         : (l as Record<string, unknown>)?.employees,
+      approver: Array.isArray((l as Record<string, unknown>)?.approver)
+        ? ((l as Record<string, unknown>)?.approver as unknown[])[0]
+        : (l as Record<string, unknown>)?.approver,
     } as Loan
     setLoan(mapped)
     setInstallments((ins ?? []) as Installment[])
@@ -145,6 +150,10 @@ export function LoanDetailPage() {
   }, [id])
 
   const isMine = loan?.employee_id && loan?.employee_id === appUser?.employee_id
+  const canDecide =
+    !!loan &&
+    loan.status === 'REQUESTED' &&
+    (loan.approver_id === appUser?.id || (canApprove && !loan.approver_id))
 
   const stats = useMemo(() => {
     const paidCount = installments.filter((i) => i.status === 'PAID').length
@@ -152,14 +161,84 @@ export function LoanDetailPage() {
     return { paidCount, pendingCount, total: installments.length }
   }, [installments])
 
+  async function activateLoanAccount(record: Loan): Promise<{ ok: boolean; error?: string }> {
+    if (!record.start_date) {
+      return { ok: false, error: 'First installment date is missing on this loan.' }
+    }
+    const sched = buildSchedule(
+      Number(record.principal_amount),
+      Number(record.installments),
+      Number(record.interest_rate_pct),
+      record.start_date
+    )
+    const endDate = sched[sched.length - 1].due_date
+    const rows = sched.map((s) => ({
+      loan_id: record.id,
+      installment_no: s.installment_no,
+      due_date: s.due_date,
+      amount: s.amount,
+      principal_portion: s.principal_portion,
+      interest_portion: s.interest_portion,
+    }))
+    const { error: insErr } = await supabase.from('loan_installments').insert(rows)
+    if (insErr) return { ok: false, error: insErr.message }
+
+    const totalOutstanding = rows.reduce((s, r) => s + r.amount, 0)
+    const { error: upErr } = await supabase
+      .from('loans')
+      .update({
+        status: 'ACTIVE',
+        disbursed_at: new Date().toISOString(),
+        end_date: endDate,
+        outstanding_amount: totalOutstanding,
+      })
+      .eq('id', record.id)
+    if (upErr) return { ok: false, error: upErr.message }
+
+    await writeAuditLog({
+      action: 'UPDATE',
+      entityType: 'loan',
+      entityId: record.id,
+      after: { status: 'ACTIVE', installments_generated: rows.length, outstanding_amount: totalOutstanding },
+    })
+    return { ok: true }
+  }
+
   async function decide(approve: boolean, note: string) {
     if (!loan) return
     setBusy(true)
-    const next = approve ? 'APPROVED' : 'REJECTED'
+    if (!approve) {
+      const { error } = await supabase
+        .from('loans')
+        .update({
+          status: 'REJECTED',
+          decided_at: new Date().toISOString(),
+          decided_by: appUser?.id ?? null,
+          decision_note: note || null,
+        })
+        .eq('id', loan.id)
+      setBusy(false)
+      if (error) {
+        toast.error('Update failed', { description: error.message })
+        return
+      }
+      await writeAuditLog({
+        action: 'UPDATE',
+        entityType: 'loan',
+        entityId: loan.id,
+        after: { status: 'REJECTED', decision_note: note },
+      })
+      toast.success('Loan rejected')
+      setDecisionOpen({ open: false, mode: 'approve' })
+      setDecisionNote('')
+      void load()
+      return
+    }
+
     const { error } = await supabase
       .from('loans')
       .update({
-        status: next,
+        status: 'APPROVED',
         decided_at: new Date().toISOString(),
         decided_by: appUser?.id ?? null,
         decision_note: note || null,
@@ -170,72 +249,44 @@ export function LoanDetailPage() {
       toast.error('Update failed', { description: error.message })
       return
     }
+
+    const activated = await activateLoanAccount({ ...loan, status: 'APPROVED' })
+    setBusy(false)
+    setDecisionOpen({ open: false, mode: 'approve' })
+    setDecisionNote('')
+
+    if (!activated.ok) {
+      await writeAuditLog({
+        action: 'UPDATE',
+        entityType: 'loan',
+        entityId: loan.id,
+        after: { status: 'APPROVED', decision_note: note, activate_failed: activated.error },
+      })
+      toast.error('Approved but employee account was not updated', { description: activated.error })
+      void load()
+      return
+    }
+
     await writeAuditLog({
       action: 'UPDATE',
       entityType: 'loan',
       entityId: loan.id,
-      after: { status: next, decision_note: note },
+      after: { status: 'ACTIVE', decision_note: note },
     })
-    toast.success(approve ? 'Loan approved' : 'Loan rejected')
-    setDecisionOpen({ open: false, mode: 'approve' })
-    setDecisionNote('')
-    setBusy(false)
+    toast.success('Loan approved — employee account updated with installment schedule')
     void load()
   }
 
   async function disburse() {
     if (!loan) return
-    if (!loan.start_date) {
-      toast.error('Set a start date first')
-      return
-    }
     setBusy(true)
-    const sched = buildSchedule(
-      Number(loan.principal_amount),
-      Number(loan.installments),
-      Number(loan.interest_rate_pct),
-      loan.start_date
-    )
-    const endDate = sched[sched.length - 1].due_date
-
-    // Generate installment rows
-    const rows = sched.map((s) => ({
-      loan_id: loan.id,
-      installment_no: s.installment_no,
-      due_date: s.due_date,
-      amount: s.amount,
-      principal_portion: s.principal_portion,
-      interest_portion: s.interest_portion,
-    }))
-    const { error: insErr } = await supabase.from('loan_installments').insert(rows)
-    if (insErr) {
-      setBusy(false)
-      toast.error('Schedule generation failed', { description: insErr.message })
-      return
-    }
-
-    const { error: upErr } = await supabase
-      .from('loans')
-      .update({
-        status: 'ACTIVE',
-        disbursed_at: new Date().toISOString(),
-        end_date: endDate,
-        outstanding_amount: rows.reduce((s, r) => s + r.amount, 0),
-      })
-      .eq('id', loan.id)
-    if (upErr) {
-      setBusy(false)
-      toast.error('Disburse failed', { description: upErr.message })
-      return
-    }
-    await writeAuditLog({
-      action: 'UPDATE',
-      entityType: 'loan',
-      entityId: loan.id,
-      after: { status: 'ACTIVE', installments_generated: rows.length },
-    })
-    toast.success('Loan disbursed; schedule generated')
+    const activated = await activateLoanAccount(loan)
     setBusy(false)
+    if (!activated.ok) {
+      toast.error('Disburse failed', { description: activated.error })
+      return
+    }
+    toast.success('Loan disbursed; schedule generated')
     void load()
   }
 
@@ -390,6 +441,11 @@ export function LoanDetailPage() {
             <Field label="Start date">{loan.start_date ?? '—'}</Field>
             <Field label="End date">{loan.end_date ?? '—'}</Field>
             <Field label="Decided">{loan.decided_at ? new Date(loan.decided_at).toLocaleDateString() : '—'}</Field>
+            {loan.status === 'REQUESTED' && loan.approver && (
+              <Field label="Sent for approval to">
+                {loan.approver.full_name ?? loan.approver.email}
+              </Field>
+            )}
           </div>
           {loan.decision_note && (
             <div className="mt-4 text-sm border-l-4 border-amber-500/60 pl-3">
@@ -401,7 +457,7 @@ export function LoanDetailPage() {
       </Card>
 
       <div className="flex flex-wrap gap-2 print:hidden">
-        {loan.status === 'REQUESTED' && canApprove && (
+        {canDecide && (
           <>
             <Button size="sm" onClick={() => setDecisionOpen({ open: true, mode: 'approve' })}>
               <CheckCircle2 className="h-4 w-4" /> Approve
@@ -539,7 +595,7 @@ export function LoanDetailPage() {
             <DialogTitle>{decisionOpen.mode === 'approve' ? 'Approve loan' : 'Reject loan'}</DialogTitle>
             <DialogDescription>
               {decisionOpen.mode === 'approve'
-                ? 'After approval, you can disburse the loan to generate the installment schedule.'
+                ? 'Approval will activate the loan on the employee account and create the monthly installment schedule.'
                 : 'Please share a brief reason. The employee can see this note.'}
             </DialogDescription>
           </DialogHeader>

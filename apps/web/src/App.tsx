@@ -43,6 +43,8 @@ import { AnnouncementsPage } from '@/pages/announcements/Announcements'
 import { AnnouncementDetailPage } from '@/pages/announcements/AnnouncementDetail'
 import { OvertimePage } from '@/pages/overtime/Overtime'
 import { OvertimeTakenPage } from '@/pages/overtime/OvertimeTaken'
+import { OvertimeApprovalPage } from '@/pages/overtime/OvertimeApproval'
+import { OvertimeEditTypePage } from '@/pages/overtime/OvertimeEditType'
 import { LettersPage } from '@/pages/letters/Letters'
 import { LetterTemplatesPage } from '@/pages/letters/Templates'
 import { LetterDetailPage } from '@/pages/letters/LetterDetail'
@@ -54,6 +56,7 @@ import { BankDisbursementPage } from '@/pages/reports/BankDisbursement'
 import { StatutoryReportPage } from '@/pages/reports/Statutory'
 import { LeaveRegisterPage } from '@/pages/reports/LeaveRegister'
 import { LoanOutstandingPage } from '@/pages/reports/LoanOutstanding'
+import { OvertimeReportPage } from '@/pages/reports/OvertimeReport'
 import { ResignationsPage } from '@/pages/resignations/Resignations'
 import { ResignationDetailPage } from '@/pages/resignations/ResignationDetail'
 import { RecruitmentHubPage } from '@/pages/recruitment/RecruitmentHub'
@@ -222,6 +225,22 @@ export default function App() {
                 element={
                   <ProtectedRoute perm="overtime.view">
                     <OvertimeTakenPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="overtime/approval"
+                element={
+                  <ProtectedRoute perm="overtime.view">
+                    <OvertimeApprovalPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="overtime/edit-type"
+                element={
+                  <ProtectedRoute perm="overtime.approve">
+                    <OvertimeEditTypePage />
                   </ProtectedRoute>
                 }
               />
@@ -457,6 +476,14 @@ export default function App() {
                 element={
                   <ProtectedRoute perm="loan.view">
                     <LoanOutstandingPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="reports/overtime"
+                element={
+                  <ProtectedRoute perm="overtime.view">
+                    <OvertimeReportPage />
                   </ProtectedRoute>
                 }
               />
