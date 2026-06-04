@@ -1,0 +1,1 @@
+-- Optional post-migration seed (schema + admin user come from migrations).
