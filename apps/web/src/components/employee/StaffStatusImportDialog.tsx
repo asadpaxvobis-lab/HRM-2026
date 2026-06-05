@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { FileSpreadsheet, Loader2, Upload } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
-import { parseStaffStatusWorkbook } from '@/lib/staffStatusImport'
+import { parseEmployeeWorkbook } from '@/lib/staffStatusImport'
 import { runStaffStatusImport } from '@/lib/runStaffStatusImport'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,7 +27,8 @@ export function StaffStatusImportDialog({ open, onOpenChange, onComplete }: Prop
   const [fileName, setFileName] = useState('')
   const [rowCount, setRowCount] = useState(0)
   const [skippedSections, setSkippedSections] = useState(0)
-  const [parsedRows, setParsedRows] = useState<ReturnType<typeof parseStaffStatusWorkbook>['rows'] | null>(null)
+  const [parseSource, setParseSource] = useState<string>('')
+  const [parsedRows, setParsedRows] = useState<ReturnType<typeof parseEmployeeWorkbook>['rows'] | null>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
 
@@ -36,6 +37,7 @@ export function StaffStatusImportDialog({ open, onOpenChange, onComplete }: Prop
     setRowCount(0)
     setSkippedSections(0)
     setParsedRows(null)
+    setParseSource('')
     setProgress({ done: 0, total: 0 })
     if (fileRef.current) fileRef.current.value = ''
   }
@@ -46,18 +48,22 @@ export function StaffStatusImportDialog({ open, onOpenChange, onComplete }: Prop
       return
     }
     const buffer = await file.arrayBuffer()
-    const parsed = parseStaffStatusWorkbook(buffer)
+    const parsed = parseEmployeeWorkbook(buffer)
     setFileName(file.name)
     setRowCount(parsed.rows.length)
     setSkippedSections(parsed.skipped)
+    setParseSource(parsed.source)
     setParsedRows(parsed.rows)
     if (parsed.rows.length === 0) {
       toast.error('No employee rows found', {
-        description: 'Expected "Staff Status Report" with header row (Device PIN, Name, CNIC, …).',
+        description:
+          'Use Staff Status Report or Employee Directory Report (.xlsx) with Code, Name, Branch, Department, …',
       })
     } else {
+      const formatLabel =
+        parsed.source === 'employee_directory' ? 'Employee Directory' : 'Staff Status Report'
       toast.success(`Found ${parsed.rows.length} employees`, {
-        description: parsed.skipped ? `${parsed.skipped} section/header rows skipped` : undefined,
+        description: `${formatLabel}${parsed.skipped ? ` · ${parsed.skipped} rows skipped` : ''}`,
       })
     }
   }
@@ -77,8 +83,20 @@ export function StaffStatusImportDialog({ open, onOpenChange, onComplete }: Prop
         canSetSalary,
         onProgress: (done, total) => setProgress({ done, total }),
       })
+      const errorSamples = result.rows
+        .filter((r) => r.status === 'error')
+        .slice(0, 3)
+        .map((r) => `${r.row.employeeCode ?? r.row.fullName}: ${r.message}`)
       toast.success('Import finished', {
-        description: `${result.created} new, ${result.updated} updated, ${result.duplicates} duplicates skipped, ${result.errors} errors`,
+        description: [
+          `${result.created} new, ${result.updated} updated`,
+          result.duplicates ? `${result.duplicates} duplicates skipped` : null,
+          result.errors ? `${result.errors} errors` : null,
+          `Total processed: ${result.created + result.updated + result.duplicates + result.errors}`,
+          errorSamples.length ? errorSamples.join(' · ') : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
       })
       onComplete()
       onOpenChange(false)
@@ -106,11 +124,12 @@ export function StaffStatusImportDialog({ open, onOpenChange, onComplete }: Prop
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <FileSpreadsheet className="h-5 w-5" />
-            Import Staff Status Report
+            Import employees from Excel
           </DialogTitle>
           <DialogDescription>
-            Imports profile, compensation, statutory, and documents. Existing employees are updated (never duplicated).
-            Repeated rows in the same file are skipped.
+            Supports Staff Status Report and Employee Directory Report. Maps code, name, branch, department,
+            designation, DOJ, CNIC, phone, device PIN, basic salary, and pay frequency into employee profiles.
+            Existing employees are updated — not duplicated.
           </DialogDescription>
         </DialogHeader>
 
@@ -128,14 +147,15 @@ export function StaffStatusImportDialog({ open, onOpenChange, onComplete }: Prop
             />
             <Button type="button" variant="outline" className="w-full" disabled={busy} onClick={() => fileRef.current?.click()}>
               <Upload className="h-4 w-4" />
-              {fileName || 'Choose Staff_Status_Report.xlsx'}
+              {fileName || 'Choose .xlsx (Employee Directory or Staff Status)'}
             </Button>
           </div>
 
           {rowCount > 0 && (
             <p className="text-sm text-muted-foreground">
               {rowCount} employees ready
-              {skippedSections > 0 ? ` · ${skippedSections} section rows skipped` : ''}
+              {parseSource === 'employee_directory' ? ' · Employee Directory format' : ''}
+              {skippedSections > 0 ? ` · ${skippedSections} rows skipped` : ''}
               {!canSetSalary ? ' · Salary import requires payroll permission' : ''}
             </p>
           )}

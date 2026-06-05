@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Loader2, Save, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
@@ -41,17 +41,27 @@ const defaultStatutory = (): Statutory => ({
   pf_employer_pct: '',
   social_security_enabled: false,
   social_security_custom_amount: '',
-  income_tax_enabled: true,
+  income_tax_enabled: false,
 })
 
 export function EmployeeDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { hasPermission } = useAuth()
   const canUpdate = hasPermission('employee.update')
   const canDelete = hasPermission('employee.delete')
   type Tab = 'profile' | 'statutory' | 'shifts' | 'compensation' | 'bank' | 'documents'
-  const [tab, setTab] = useState<Tab>('profile')
+  const tabParam = searchParams.get('tab')
+  const [tab, setTab] = useState<Tab>(
+    tabParam === 'compensation' ||
+      tabParam === 'statutory' ||
+      tabParam === 'shifts' ||
+      tabParam === 'bank' ||
+      tabParam === 'documents'
+      ? tabParam
+      : 'profile'
+  )
   const [loading, setLoading] = useState(true)
   const [employee, setEmployee] = useState<Record<string, unknown> | null>(null)
   const [statutory, setStatutory] = useState<Statutory>(defaultStatutory())
@@ -103,7 +113,7 @@ export function EmployeeDetailPage() {
           pf_employer_pct: s.pf_employer_pct?.toString() ?? '',
           social_security_enabled: s.social_security_enabled,
           social_security_custom_amount: s.social_security_custom_amount?.toString() ?? '',
-          income_tax_enabled: s.income_tax_enabled,
+          income_tax_enabled: s.income_tax_enabled === true,
         })
       }
       setRecentPunches(

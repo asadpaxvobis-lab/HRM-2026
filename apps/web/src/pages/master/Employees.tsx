@@ -26,11 +26,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { avatarColorFor, cn, initialsFromName } from '@/lib/utils'
+import { avatarColorFor, cn, initialsFromName, sortByEmployeeCode } from '@/lib/utils'
 import { toast } from 'sonner'
 import { DocumentsTab } from '@/components/employee/DocumentsTab'
 import { DeleteEmployeeDialog } from '@/components/employee/DeleteEmployeeDialog'
 import { StaffStatusImportDialog } from '@/components/employee/StaffStatusImportDialog'
+import {
+  AllowanceToggleField,
+  compGrossFromForm,
+  defaultAllowanceFlags,
+  validateAllowanceForm,
+} from '@/components/payroll/AllowanceToggleField'
 
 type Lookup = { id: string; name?: string; title?: string; code?: string }
 
@@ -45,6 +51,7 @@ type Employee = {
   cnic: string | null
   employment_status: string
   is_active: boolean
+  overtime_eligible: boolean
   photo_url: string | null
   branch_id: string | null
   department_id: string | null
@@ -73,6 +80,7 @@ const emptyForm = {
   device_pin: '',
   attendance_device_id: '',
   is_active: true,
+  overtime_eligible: true,
 }
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -88,6 +96,7 @@ const emptyComp = {
   pay_frequency: 'Monthly',
   currency: 'PKR',
   revision_reason: 'Joining',
+  ...defaultAllowanceFlags(),
 }
 
 const emptyStatutory = {
@@ -99,7 +108,7 @@ const emptyStatutory = {
   pf_employer_pct: '',
   social_security_enabled: false,
   social_security_custom_amount: '',
-  income_tax_enabled: true,
+  income_tax_enabled: false,
 }
 
 type Step = 1 | 2 | 3 | 4
@@ -128,7 +137,7 @@ function validateComp(comp: typeof emptyComp): string | null {
   if (!comp.effective_from) return 'Effective from is required'
   if (!comp.pay_frequency) return 'Pay frequency is required'
   if (comp.basic <= 0) return 'Basic salary is required (must be greater than 0)'
-  return null
+  return validateAllowanceForm(comp)
 }
 
 export function EmployeesPage() {
@@ -187,7 +196,7 @@ export function EmployeesPage() {
     const { data, error } = await supabase
       .from('employees')
       .select(
-        `id, employee_code, first_name, last_name, full_name, email, phone, cnic, employment_status, is_active, photo_url,
+        `id, employee_code, first_name, last_name, full_name, email, phone, cnic, employment_status, is_active, overtime_eligible, photo_url,
          device_pin, branch_id, department_id, designation_id,
          branches(name), departments(name), designations(title)`
       )
@@ -207,7 +216,7 @@ export function EmployeesPage() {
           designations: rel('designations'),
         } as Employee
       })
-      setRows(mapped)
+      setRows(sortByEmployeeCode(mapped))
     }
     setLoading(false)
   }
@@ -325,13 +334,14 @@ export function EmployeesPage() {
       date_of_birth: row.date_of_birth ? String(row.date_of_birth).slice(0, 10) : '',
       date_of_joining: row.date_of_joining ? String(row.date_of_joining).slice(0, 10) : '',
       employment_status: e.employment_status,
-      branch_id: e.branch_id ?? '',
-      department_id: e.department_id ?? '',
-      designation_id: e.designation_id ?? '',
+      branch_id: row.branch_id ? String(row.branch_id) : e.branch_id ?? '',
+      department_id: row.department_id ? String(row.department_id) : e.department_id ?? '',
+      designation_id: row.designation_id ? String(row.designation_id) : e.designation_id ?? '',
       reports_to_id: row.reports_to_id ? String(row.reports_to_id) : '',
       device_pin: row.device_pin != null ? String(row.device_pin) : '',
       attendance_device_id: '',
       is_active: e.is_active,
+      overtime_eligible: row.overtime_eligible !== false,
     })
 
     try {
@@ -360,6 +370,11 @@ export function EmployeesPage() {
         pay_frequency: sal.pay_frequency,
         currency: sal.currency,
         revision_reason: sal.revision_reason ?? '',
+        house_rent_enabled: sal.house_rent_enabled === true,
+        medical_enabled: sal.medical_enabled === true,
+        conveyance_enabled: sal.conveyance_enabled === true,
+        utilities_enabled: sal.utilities_enabled === true,
+        other_allowances_enabled: sal.other_allowances_enabled === true,
       })
     }
 
@@ -374,7 +389,7 @@ export function EmployeesPage() {
         pf_employer_pct: stat.pf_employer_pct?.toString() ?? '',
         social_security_enabled: stat.social_security_enabled,
         social_security_custom_amount: stat.social_security_custom_amount?.toString() ?? '',
-        income_tax_enabled: stat.income_tax_enabled,
+        income_tax_enabled: stat.income_tax_enabled === true,
       })
     }
 
@@ -408,6 +423,7 @@ export function EmployeesPage() {
       reports_to_id: form.reports_to_id || null,
       device_pin: form.device_pin.trim() ? parseInt(form.device_pin, 10) : null,
       is_active: form.is_active,
+      overtime_eligible: form.overtime_eligible,
     }
 
     if (editing) {
@@ -552,6 +568,11 @@ export function EmployeesPage() {
       pay_frequency: comp.pay_frequency,
       currency: comp.currency,
       revision_reason: comp.revision_reason.trim() || null,
+      house_rent_enabled: comp.house_rent_enabled,
+      medical_enabled: comp.medical_enabled,
+      conveyance_enabled: comp.conveyance_enabled,
+      utilities_enabled: comp.utilities_enabled,
+      other_allowances_enabled: comp.other_allowances_enabled,
     }
     if (compRecordId) {
       const { error } = await supabase.from('employee_salary_history').update(payload).eq('id', compRecordId)
@@ -575,13 +596,10 @@ export function EmployeesPage() {
     return true
   }
 
-  // STEP 3 — save statutory
+  // STEP 3 — save statutory (always persist, including when all toggles are off)
   const saveStatutoryStep = async (): Promise<boolean> => {
     const empId = activeEmployeeId
     if (!empId) return false
-    if (!statutory.eobi_enabled && !statutory.pf_enabled && !statutory.social_security_enabled && !statutory.income_tax_enabled) {
-      return true
-    }
     setBusy(true)
     const payload = {
       employee_id: empId,
@@ -653,8 +671,7 @@ export function EmployeesPage() {
     }
   }
 
-  const compGross =
-    +comp.basic + +comp.house_rent + +comp.medical + +comp.conveyance + +comp.utilities + +comp.other_allowances
+  const compGross = compGrossFromForm(+comp.basic, comp)
 
   return (
     <div className="space-y-6">
@@ -1028,10 +1045,25 @@ export function EmployeesPage() {
                   </Select>
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox checked={form.is_active} onCheckedChange={(v) => setForm({ ...form, is_active: !!v })} />
-                Active
-              </label>
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox checked={form.is_active} onCheckedChange={(v) => setForm({ ...form, is_active: !!v })} />
+                  Active
+                </label>
+                <label className="flex items-start gap-2 text-sm">
+                  <Checkbox
+                    checked={form.overtime_eligible}
+                    onCheckedChange={(v) => setForm({ ...form, overtime_eligible: !!v })}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="font-medium">Eligible for overtime</span>
+                    <span className="block text-xs text-muted-foreground">
+                      If unchecked, automatic overtime from attendance will not be created for this employee.
+                    </span>
+                  </span>
+                </label>
+              </div>
             </form>
           )}
 
@@ -1078,13 +1110,48 @@ export function EmployeesPage() {
                   />
                 </div>
               </div>
-              <div className="grid sm:grid-cols-3 gap-4">
+              <div className="grid sm:grid-cols-2 gap-4">
                 <MoneyField label="Basic" value={comp.basic} onChange={(v) => setComp({ ...comp, basic: v })} disabled={!canSetSalary} required />
-                <MoneyField label="House rent" value={comp.house_rent} onChange={(v) => setComp({ ...comp, house_rent: v })} disabled={!canSetSalary} required />
-                <MoneyField label="Medical" value={comp.medical} onChange={(v) => setComp({ ...comp, medical: v })} disabled={!canSetSalary} required />
-                <MoneyField label="Conveyance" value={comp.conveyance} onChange={(v) => setComp({ ...comp, conveyance: v })} disabled={!canSetSalary} required />
-                <MoneyField label="Utilities" value={comp.utilities} onChange={(v) => setComp({ ...comp, utilities: v })} disabled={!canSetSalary} required />
-                <MoneyField label="Other allowances" value={comp.other_allowances} onChange={(v) => setComp({ ...comp, other_allowances: v })} disabled={!canSetSalary} required />
+                <AllowanceToggleField
+                  label="House rent allowance"
+                  enabled={comp.house_rent_enabled}
+                  amount={comp.house_rent}
+                  onEnabledChange={(v) => setComp({ ...comp, house_rent_enabled: v })}
+                  onAmountChange={(v) => setComp({ ...comp, house_rent: v })}
+                  disabled={!canSetSalary}
+                />
+                <AllowanceToggleField
+                  label="Medical allowance"
+                  enabled={comp.medical_enabled}
+                  amount={comp.medical}
+                  onEnabledChange={(v) => setComp({ ...comp, medical_enabled: v })}
+                  onAmountChange={(v) => setComp({ ...comp, medical: v })}
+                  disabled={!canSetSalary}
+                />
+                <AllowanceToggleField
+                  label="Conveyance allowance"
+                  enabled={comp.conveyance_enabled}
+                  amount={comp.conveyance}
+                  onEnabledChange={(v) => setComp({ ...comp, conveyance_enabled: v })}
+                  onAmountChange={(v) => setComp({ ...comp, conveyance: v })}
+                  disabled={!canSetSalary}
+                />
+                <AllowanceToggleField
+                  label="Utilities allowance"
+                  enabled={comp.utilities_enabled}
+                  amount={comp.utilities}
+                  onEnabledChange={(v) => setComp({ ...comp, utilities_enabled: v })}
+                  onAmountChange={(v) => setComp({ ...comp, utilities: v })}
+                  disabled={!canSetSalary}
+                />
+                <AllowanceToggleField
+                  label="Other allowances / incentive"
+                  enabled={comp.other_allowances_enabled}
+                  amount={comp.other_allowances}
+                  onEnabledChange={(v) => setComp({ ...comp, other_allowances_enabled: v })}
+                  onAmountChange={(v) => setComp({ ...comp, other_allowances: v })}
+                  disabled={!canSetSalary}
+                />
               </div>
               <div className="flex items-center justify-between p-3 rounded-md bg-primary/5 border border-primary/20 text-sm">
                 <span className="font-medium text-muted-foreground">Gross ({comp.pay_frequency})</span>

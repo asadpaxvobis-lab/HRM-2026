@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import type { StaffImportSource } from '@/lib/staffStatusImport'
 
 export type EmployeeDuplicateMatch = {
   employeeId: string
@@ -8,6 +9,7 @@ export type EmployeeDuplicateMatch = {
 
 export type EmployeeListRow = {
   id: string
+  employee_code?: string | null
   cnic: string | null
   device_pin: number | null
   first_name: string
@@ -27,9 +29,16 @@ export function normalizedEmployeeName(first: string, last: string | null): stri
 
 /** Key used to detect duplicate rows within one import file. */
 export function importRowDedupeKey(
-  row: { cnic: string; hasRealCnic: boolean; devicePin: number | null; fullName: string },
+  row: {
+    employeeCode?: string | null
+    cnic: string
+    hasRealCnic: boolean
+    devicePin: number | null
+    fullName: string
+  },
   deviceId: string | null
 ): string {
+  if (row.employeeCode?.trim()) return `code:${row.employeeCode.trim().toUpperCase()}`
   if (row.hasRealCnic) return `cnic:${row.cnic}`
   if (row.devicePin != null && row.devicePin > 0 && deviceId) {
     return `pin:${deviceId}:${row.devicePin}:${normName(row.fullName)}`
@@ -42,6 +51,7 @@ export function importRowDedupeKey(
 
 export function findDuplicateInList(
   row: {
+    employeeCode?: string | null
     cnic: string
     hasRealCnic: boolean
     devicePin: number | null
@@ -56,6 +66,18 @@ export function findDuplicateInList(
 
   for (const e of employees) {
     if (excludeEmployeeId && e.id === excludeEmployeeId) continue
+
+    if (
+      row.employeeCode?.trim() &&
+      e.employee_code &&
+      e.employee_code.trim().toUpperCase() === row.employeeCode.trim().toUpperCase()
+    ) {
+      return {
+        employeeId: e.id,
+        reason: 'cnic',
+        label: `Employee code ${row.employeeCode} already exists`,
+      }
+    }
 
     if (row.hasRealCnic && e.cnic && e.cnic.replace(/\D/g, '') === row.cnic.replace(/\D/g, '')) {
       return {
@@ -87,6 +109,36 @@ export function findDuplicateInList(
   }
 
   return null
+}
+
+/** Employee Directory import: match by code only so shared placeholder CNICs do not collapse rows. */
+export function findImportDuplicate(
+  row: {
+    source?: StaffImportSource
+    employeeCode?: string | null
+    cnic: string
+    hasRealCnic: boolean
+    devicePin: number | null
+    firstName: string
+    lastName: string
+    fullName: string
+  },
+  employees: EmployeeListRow[]
+): EmployeeDuplicateMatch | null {
+  if (row.source === 'employee_directory') {
+    const code = row.employeeCode?.trim().toUpperCase()
+    if (!code) return null
+    const hit = employees.find((e) => e.employee_code?.trim().toUpperCase() === code)
+    if (hit) {
+      return {
+        employeeId: hit.id,
+        reason: 'cnic',
+        label: `Update ${row.employeeCode}`,
+      }
+    }
+    return null
+  }
+  return findDuplicateInList(row, employees)
 }
 
 export async function loadCompanyEmployees(companyId: string): Promise<EmployeeListRow[]> {

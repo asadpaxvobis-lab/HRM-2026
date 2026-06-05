@@ -15,6 +15,7 @@ import {
   Fingerprint,
   ScanFace,
   RefreshCw,
+  Search,
   type LucideIcon,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -25,6 +26,7 @@ import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { buildBiometricGaps, type BiometricGapsByDepartment } from '@/lib/biometricGaps'
 import { loadAllDevicePinRows } from '@/lib/employeeDevicePin'
 import { fetchZktBiometricStatus } from '@/lib/zktAgent'
@@ -41,6 +43,7 @@ type Stat = {
   hint: string
   to?: string
   perm?: string
+  onClick?: () => void
 }
 
 export function DashboardPage() {
@@ -82,6 +85,7 @@ export function DashboardPage() {
   })
   const [otTaken, setOtTaken] = useState({ employees: 0, hoursLabel: '0h' })
   const [lateSummary, setLateSummary] = useState({ employees: 0, minutes: 0, days: 0 })
+  const [overviewQuery, setOverviewQuery] = useState('')
 
   const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), [])
   const in30Iso = useMemo(() => {
@@ -199,7 +203,7 @@ export function DashboardPage() {
         const monthStart = `${todayIso.slice(0, 8)}01`
         const { data: lateDaily } = await supabase
           .from('attendance_daily')
-          .select('employee_id, late_minutes, status')
+          .select('employee_id, late_minutes, status, first_in, last_out')
           .gte('attendance_date', monthStart)
           .lte('attendance_date', todayIso)
 
@@ -207,12 +211,13 @@ export function DashboardPage() {
         let lateMinutes = 0
         let lateDays = 0
         for (const d of lateDaily ?? []) {
+          if (!d.first_in || !d.last_out) continue
           const mins = Number(d.late_minutes ?? 0)
           const status = (d.status as string | null) ?? ''
           if (mins > 0 || status === 'Late' || status.toLowerCase().includes('late')) {
             lateEmps.add(d.employee_id as string)
             lateDays += 1
-            lateMinutes += mins > 0 ? mins : 1
+            lateMinutes += mins
           }
         }
         setLateSummary({ employees: lateEmps.size, minutes: lateMinutes, days: lateDays })
@@ -467,12 +472,20 @@ export function DashboardPage() {
         label: 'Missing biometrics',
         value: bioLoading && bioGapsByDept.length === 0 && !bioAgentOffline ? '…' : missingBioCount,
         icon: Fingerprint,
-        hint: bioAgentOffline ? 'Agent offline — refresh' : 'Finger / face not on device',
-        to: '#bio-gaps',
+        hint: bioAgentOffline ? 'Agent offline — refresh' : 'Missing IN / OUT logs',
+        to: '/attendance/missing-biometrics',
       })
     }
     return tiles
   }, [visibleStats, hasPermission, bioLoading, bioGapsByDept.length, missingBioCount, bioAgentOffline])
+
+  const filteredOverviewStats = useMemo(() => {
+    const q = overviewQuery.toLowerCase().trim()
+    if (!q) return overviewStats
+    return overviewStats.filter(
+      (s) => s.label.toLowerCase().includes(q) || s.hint.toLowerCase().includes(q)
+    )
+  }, [overviewStats, overviewQuery])
 
   return (
     <div className="space-y-8">
@@ -481,11 +494,7 @@ export function DashboardPage() {
           <h2 className="text-2xl font-semibold tracking-tight">
             Hello, {appUser?.full_name?.split(' ')[0] || 'there'}
           </h2>
-          <p className="text-sm text-muted-foreground">
-            {roles.join(' · ') || 'No roles assigned'}
-            {' · '}
-            {permissions.size} permissions
-          </p>
+          <p className="text-sm text-muted-foreground">{permissions.size} permissions</p>
         </div>
         <div className="text-right text-sm">
           <div className="font-medium">
@@ -502,13 +511,27 @@ export function DashboardPage() {
         </div>
       </div>
 
+      <div className="relative max-w-md">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Search overview… (e.g. overtime, leave, attendance)"
+          className="pl-9"
+          value={overviewQuery}
+          onChange={(e) => setOverviewQuery(e.target.value)}
+        />
+      </div>
+
       {/* Overview — stat tiles (matches dashboard screenshot) */}
       <section aria-label="Overview">
         <h3 className="sr-only">Overview</h3>
+        {filteredOverviewStats.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-6">No overview cards match your search.</p>
+        ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {overviewStats.map((s) => {
+        {filteredOverviewStats.map((s) => {
+          const interactive = !!(s.to || s.onClick)
           const card = (
-            <Card className={cn('transition-colors', s.to && 'hover:border-primary/40 hover:bg-accent/40')}>
+            <Card className={cn('transition-colors', interactive && 'cursor-pointer hover:border-primary/40 hover:bg-accent/40')}>
               <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
                 <CardTitle className="text-sm font-medium text-muted-foreground">{s.label}</CardTitle>
                 <s.icon className="h-4 w-4 text-muted-foreground" />
@@ -519,6 +542,13 @@ export function DashboardPage() {
               </CardContent>
             </Card>
           )
+          if (s.onClick) {
+            return (
+              <button key={s.label} type="button" className="block w-full text-left" onClick={s.onClick}>
+                {card}
+              </button>
+            )
+          }
           if (s.to?.startsWith('#')) {
             return (
               <a key={s.label} href={s.to} className="block">
@@ -535,6 +565,7 @@ export function DashboardPage() {
           )
         })}
         </div>
+        )}
       </section>
 
       {/* Live attendance feed — directly under stats (matches screenshot) */}

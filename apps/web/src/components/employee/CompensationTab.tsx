@@ -12,6 +12,12 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import {
+  AllowanceToggleField,
+  compGrossFromForm,
+  defaultAllowanceFlags,
+  validateAllowanceForm,
+} from '@/components/payroll/AllowanceToggleField'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -35,6 +41,11 @@ type Salary = {
   currency: string
   revision_reason: string | null
   notes: string | null
+  house_rent_enabled: boolean
+  medical_enabled: boolean
+  conveyance_enabled: boolean
+  utilities_enabled: boolean
+  other_allowances_enabled: boolean
 }
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -52,6 +63,7 @@ const emptyForm = {
   currency: 'PKR',
   revision_reason: '',
   notes: '',
+  ...defaultAllowanceFlags(),
 }
 
 const pkr = (n: number) => `PKR ${Number(n).toLocaleString('en-PK', { maximumFractionDigits: 0 })}`
@@ -60,7 +72,7 @@ function validateCompForm(form: typeof emptyForm): string | null {
   if (!form.effective_from) return 'Effective from is required'
   if (!form.pay_frequency) return 'Pay frequency is required'
   if (form.basic <= 0) return 'Basic salary is required (must be greater than 0)'
-  return null
+  return validateAllowanceForm(form)
 }
 
 export function CompensationTab({ employeeId }: { employeeId: string }) {
@@ -89,16 +101,7 @@ export function CompensationTab({ employeeId }: { employeeId: string }) {
     void load()
   }, [employeeId])
 
-  const gross = useMemo(
-    () =>
-      +form.basic +
-      +form.house_rent +
-      +form.medical +
-      +form.conveyance +
-      +form.utilities +
-      +form.other_allowances,
-    [form]
-  )
+  const gross = useMemo(() => compGrossFromForm(+form.basic, form), [form])
 
   const openCreate = () => {
     setEditing(null)
@@ -118,6 +121,11 @@ export function CompensationTab({ employeeId }: { employeeId: string }) {
             currency: last.currency,
             revision_reason: '',
             notes: '',
+            house_rent_enabled: last.house_rent_enabled === true,
+            medical_enabled: last.medical_enabled === true,
+            conveyance_enabled: last.conveyance_enabled === true,
+            utilities_enabled: last.utilities_enabled === true,
+            other_allowances_enabled: last.other_allowances_enabled === true,
           }
         : emptyForm
     )
@@ -139,6 +147,11 @@ export function CompensationTab({ employeeId }: { employeeId: string }) {
       currency: s.currency,
       revision_reason: s.revision_reason ?? '',
       notes: s.notes ?? '',
+      house_rent_enabled: s.house_rent_enabled === true,
+      medical_enabled: s.medical_enabled === true,
+      conveyance_enabled: s.conveyance_enabled === true,
+      utilities_enabled: s.utilities_enabled === true,
+      other_allowances_enabled: s.other_allowances_enabled === true,
     })
     setOpen(true)
   }
@@ -165,6 +178,11 @@ export function CompensationTab({ employeeId }: { employeeId: string }) {
       currency: form.currency,
       revision_reason: form.revision_reason.trim() || null,
       notes: form.notes.trim() || null,
+      house_rent_enabled: form.house_rent_enabled,
+      medical_enabled: form.medical_enabled,
+      conveyance_enabled: form.conveyance_enabled,
+      utilities_enabled: form.utilities_enabled,
+      other_allowances_enabled: form.other_allowances_enabled,
     }
     if (editing) {
       const { error } = await supabase.from('employee_salary_history').update(payload).eq('id', editing.id)
@@ -230,24 +248,32 @@ export function CompensationTab({ employeeId }: { employeeId: string }) {
             )}
           </CardHeader>
           <CardContent>
-            <div className="grid sm:grid-cols-3 gap-3 text-sm">
+            <div className="grid sm:grid-cols-2 gap-3 text-sm">
               <Pair label="Basic" value={pkr(current.basic)} />
-              <Pair label="House rent" value={pkr(current.house_rent)} />
-              <Pair label="Medical" value={pkr(current.medical)} />
-              <Pair label="Conveyance" value={pkr(current.conveyance)} />
-              <Pair label="Utilities" value={pkr(current.utilities)} />
-              <Pair label="Other" value={pkr(current.other_allowances)} />
+              {current.house_rent_enabled && <Pair label="House rent" value={pkr(current.house_rent)} />}
+              {current.medical_enabled && <Pair label="Medical" value={pkr(current.medical)} />}
+              {current.conveyance_enabled && <Pair label="Conveyance" value={pkr(current.conveyance)} />}
+              {current.utilities_enabled && <Pair label="Utilities" value={pkr(current.utilities)} />}
+              {current.other_allowances_enabled && (
+                <Pair label="Other / incentive" value={pkr(current.other_allowances)} />
+              )}
             </div>
             <div className="mt-6 flex items-center justify-between p-4 rounded-lg bg-primary/5 border border-primary/20">
               <span className="text-sm font-medium text-muted-foreground">Gross ({current.pay_frequency})</span>
               <span className="text-lg font-semibold tabular-nums">
                 {pkr(
-                  +current.basic +
-                    +current.house_rent +
-                    +current.medical +
-                    +current.conveyance +
-                    +current.utilities +
-                    +current.other_allowances
+                  compGrossFromForm(+current.basic, {
+                    house_rent: +current.house_rent,
+                    medical: +current.medical,
+                    conveyance: +current.conveyance,
+                    utilities: +current.utilities,
+                    other_allowances: +current.other_allowances,
+                    house_rent_enabled: current.house_rent_enabled === true,
+                    medical_enabled: current.medical_enabled === true,
+                    conveyance_enabled: current.conveyance_enabled === true,
+                    utilities_enabled: current.utilities_enabled === true,
+                    other_allowances_enabled: current.other_allowances_enabled === true,
+                  })
                 )}
               </span>
             </div>
@@ -276,8 +302,18 @@ export function CompensationTab({ employeeId }: { employeeId: string }) {
           <CardContent className="p-0">
             <div className="divide-y">
               {rows.slice(1).map((s) => {
-                const total =
-                  +s.basic + +s.house_rent + +s.medical + +s.conveyance + +s.utilities + +s.other_allowances
+                const total = compGrossFromForm(+s.basic, {
+                  house_rent: +s.house_rent,
+                  medical: +s.medical,
+                  conveyance: +s.conveyance,
+                  utilities: +s.utilities,
+                  other_allowances: +s.other_allowances,
+                  house_rent_enabled: s.house_rent_enabled === true,
+                  medical_enabled: s.medical_enabled === true,
+                  conveyance_enabled: s.conveyance_enabled === true,
+                  utilities_enabled: s.utilities_enabled === true,
+                  other_allowances_enabled: s.other_allowances_enabled === true,
+                })
                 return (
                   <div key={s.id} className="flex flex-wrap items-center gap-3 px-6 py-3">
                     <div className="w-44 text-sm tabular-nums">
@@ -331,13 +367,43 @@ export function CompensationTab({ employeeId }: { employeeId: string }) {
                 </Select>
               </div>
             </div>
-            <div className="grid sm:grid-cols-3 gap-4">
+            <div className="grid sm:grid-cols-2 gap-4">
               <MoneyField label="Basic *" value={form.basic} onChange={(v) => setForm({ ...form, basic: v })} required />
-              <MoneyField label="House rent *" value={form.house_rent} onChange={(v) => setForm({ ...form, house_rent: v })} required />
-              <MoneyField label="Medical *" value={form.medical} onChange={(v) => setForm({ ...form, medical: v })} required />
-              <MoneyField label="Conveyance *" value={form.conveyance} onChange={(v) => setForm({ ...form, conveyance: v })} required />
-              <MoneyField label="Utilities *" value={form.utilities} onChange={(v) => setForm({ ...form, utilities: v })} required />
-              <MoneyField label="Other allowances *" value={form.other_allowances} onChange={(v) => setForm({ ...form, other_allowances: v })} required />
+              <AllowanceToggleField
+                label="House rent allowance"
+                enabled={form.house_rent_enabled}
+                amount={form.house_rent}
+                onEnabledChange={(v) => setForm({ ...form, house_rent_enabled: v })}
+                onAmountChange={(v) => setForm({ ...form, house_rent: v })}
+              />
+              <AllowanceToggleField
+                label="Medical allowance"
+                enabled={form.medical_enabled}
+                amount={form.medical}
+                onEnabledChange={(v) => setForm({ ...form, medical_enabled: v })}
+                onAmountChange={(v) => setForm({ ...form, medical: v })}
+              />
+              <AllowanceToggleField
+                label="Conveyance allowance"
+                enabled={form.conveyance_enabled}
+                amount={form.conveyance}
+                onEnabledChange={(v) => setForm({ ...form, conveyance_enabled: v })}
+                onAmountChange={(v) => setForm({ ...form, conveyance: v })}
+              />
+              <AllowanceToggleField
+                label="Utilities allowance"
+                enabled={form.utilities_enabled}
+                amount={form.utilities}
+                onEnabledChange={(v) => setForm({ ...form, utilities_enabled: v })}
+                onAmountChange={(v) => setForm({ ...form, utilities: v })}
+              />
+              <AllowanceToggleField
+                label="Other allowances / incentive"
+                enabled={form.other_allowances_enabled}
+                amount={form.other_allowances}
+                onEnabledChange={(v) => setForm({ ...form, other_allowances_enabled: v })}
+                onAmountChange={(v) => setForm({ ...form, other_allowances: v })}
+              />
             </div>
             <div className="flex items-center justify-between p-3 rounded-md bg-muted text-sm">
               <span>Gross ({form.pay_frequency})</span>

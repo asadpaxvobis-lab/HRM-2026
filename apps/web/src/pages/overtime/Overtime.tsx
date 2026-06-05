@@ -38,7 +38,12 @@ import {
   overtimePayFormulaLabel,
   type OtPayContext,
 } from '@/lib/overtimePay'
-import { defaultMultiplierForType } from '@/lib/overtimeTypes'
+import {
+  defaultMultiplierForType,
+  fetchOtMultipliers,
+  mergeOtMultipliers,
+  type OtMultipliers,
+} from '@/lib/overtimeTypes'
 
 type OT = {
   id: string
@@ -167,7 +172,7 @@ const emptyForm = {
   reason: '',
 }
 
-type EmployeeOption = { id: string; employee_code: string; full_name: string }
+type EmployeeOption = { id: string; employee_code: string; full_name: string; overtime_eligible?: boolean }
 
 export function OvertimePage() {
   const { appUser, hasPermission } = useAuth()
@@ -189,6 +194,12 @@ export function OvertimePage() {
   const [decisionPayLoading, setDecisionPayLoading] = useState(false)
   const [decisionFor, setDecisionFor] = useState<{ ot: OT; approve: boolean } | null>(null)
   const [decisionNote, setDecisionNote] = useState('')
+  const [companyMult, setCompanyMult] = useState<OtMultipliers>(mergeOtMultipliers())
+
+  useEffect(() => {
+    if (!appUser?.company_id) return
+    void fetchOtMultipliers(appUser.company_id).then(setCompanyMult)
+  }, [appUser?.company_id])
 
   async function load() {
     setLoading(true)
@@ -241,7 +252,7 @@ export function OvertimePage() {
     if (!canOpenForm) return
     void supabase
       .from('employees')
-      .select('id, employee_code, full_name')
+      .select('id, employee_code, full_name, overtime_eligible')
       .eq('is_active', true)
       .order('full_name')
       .then(({ data, error }) => {
@@ -249,6 +260,11 @@ export function OvertimePage() {
         else setEmployees((data ?? []) as EmployeeOption[])
       })
   }, [canOpenForm])
+
+  const otEligibleEmployees = useMemo(
+    () => employees.filter((e) => e.overtime_eligible !== false),
+    [employees]
+  )
 
   const selfEmployee = useMemo(
     () => employees.find((e) => e.id === appUser?.employee_id),
@@ -361,8 +377,8 @@ export function OvertimePage() {
 
   // Auto-set rate multiplier when ot_type changes
   useEffect(() => {
-    setForm((f) => ({ ...f, rate_multiplier: defaultMultiplierForType(f.ot_type) }))
-  }, [form.ot_type])
+    setForm((f) => ({ ...f, rate_multiplier: defaultMultiplierForType(f.ot_type, companyMult) }))
+  }, [form.ot_type, companyMult])
 
   async function submit() {
     if (!appUser) return
@@ -381,6 +397,11 @@ export function OvertimePage() {
     }
     if (!form.ot_date) {
       toast.error('Date is required')
+      return
+    }
+    const empRecord = employees.find((e) => e.id === employeeId)
+    if (empRecord?.overtime_eligible === false) {
+      toast.error('This employee is not eligible for overtime')
       return
     }
     setBusy(true)
@@ -705,11 +726,15 @@ export function OvertimePage() {
                 {canApplyForAny ? (
                   <EmployeeSearchSelect
                     resetKey={open}
-                    employees={employees}
+                    employees={otEligibleEmployees}
                     value={form.employee_id}
                     onChange={(employee_id) => setForm({ ...form, employee_id })}
                     listMaxHeightClass="max-h-48"
                   />
+                ) : selfEmployee?.overtime_eligible === false ? (
+                  <p className="text-sm text-muted-foreground rounded-md border px-3 py-2">
+                    Your profile is not marked eligible for overtime. Contact HR.
+                  </p>
                 ) : (
                   <Input
                     readOnly

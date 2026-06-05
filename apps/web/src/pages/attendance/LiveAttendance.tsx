@@ -10,7 +10,9 @@ import { avatarColorFor, cn, initialsFromName } from '@/lib/utils'
 import {
   classifyLiveAttendance,
   countLiveAttendance,
+  getLiveDisplayStatus,
   liveBucketLabels,
+  liveDisplayStatusClass,
   type LiveAttendanceBucket,
   type LiveAttendanceDaily,
 } from '@/lib/liveAttendance'
@@ -182,8 +184,8 @@ export function LiveAttendancePage() {
         <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] sm:grid-cols-[repeat(auto-fill,minmax(12.5rem,1fr))]">
           {filtered.map((e) => {
             const d = dailyByEmployee.get(e.id)
-            const bucket = classifyLiveAttendance(d)
-            const timeLabel = fmtTime(d?.first_in) ?? (bucket === 'absent' ? null : '—')
+            const displayStatus = getLiveDisplayStatus(d)
+            const timeLabel = fmtTime(d?.first_in)
             return (
               <Link
                 key={e.id}
@@ -205,26 +207,19 @@ export function LiveAttendancePage() {
                     <span className="break-words leading-snug">{e.branches?.name ?? 'No branch'}</span>
                   </div>
                 </div>
-                {timeLabel && (
-                  <span
-                    className={cn(
-                      'text-xs font-semibold px-2.5 py-1 rounded',
-                      bucket === 'in' || bucket === 'out'
-                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
-                        : 'bg-muted text-muted-foreground'
-                    )}
-                  >
-                    {timeLabel}
+                <span
+                  className={cn(
+                    'text-[10px] uppercase tracking-wide font-semibold px-2.5 py-1 rounded',
+                    liveDisplayStatusClass[displayStatus]
+                  )}
+                >
+                  {displayStatus}
+                </span>
+                {timeLabel && (displayStatus === 'Present' || displayStatus === 'Late' || displayStatus === 'Half Day') && (
+                  <span className="text-xs font-semibold tabular-nums text-muted-foreground">
+                    In {timeLabel}
+                    {d?.last_out ? ` · Out ${fmtTime(d.last_out)}` : ''}
                   </span>
-                )}
-                {bucket === 'absent' && !timeLabel && (
-                  <span className="text-[10px] uppercase tracking-wide text-red-600 font-medium">Absent</span>
-                )}
-                {bucket === 'leave' && (
-                  <span className="text-[10px] uppercase tracking-wide text-violet-600 font-medium">On leave</span>
-                )}
-                {bucket === 'out' && timeLabel && (
-                  <span className="text-[10px] text-muted-foreground">Checked out {fmtTime(d?.last_out)}</span>
                 )}
               </Link>
             )

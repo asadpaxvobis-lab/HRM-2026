@@ -3,11 +3,18 @@ import { nextCode } from '@/lib/codegen'
 import { nextDepartmentCode } from '@/lib/departmentCodes'
 import { syncEmployeeDevicePin } from '@/lib/employeeDevicePin'
 import {
-  findDuplicateInList,
+  findImportDuplicate,
   importRowDedupeKey,
   type EmployeeListRow,
 } from '@/lib/employeeDuplicateCheck'
-import { matchByName, type StaffImportRow } from '@/lib/staffStatusImport'
+import {
+  matchBranchName,
+  matchDepartmentName,
+  matchDesignationTitle,
+  matchEmployeeByName,
+  normPersonName,
+  type StaffImportRow,
+} from '@/lib/staffStatusImport'
 
 const DOC_BUCKET = 'employee-documents'
 const today = () => new Date().toISOString().slice(0, 10)
@@ -43,7 +50,7 @@ async function ensureBranch(companyId: string, name: string, cache: Map<string, 
   if (!key) throw new Error('Branch name missing')
   const hit = cache.get(key)
   if (hit) return hit
-  const matched = matchByName(name, list as (Lookup & { id: string })[], 'name')
+  const matched = matchBranchName(name, list as (Lookup & { id: string })[])
   if (matched) {
     cache.set(key, matched)
     return matched
@@ -76,12 +83,12 @@ async function ensureDepartment(
   if (!key) throw new Error('Department name missing')
   const hit = cache.get(key)
   if (hit) return hit
-  const matched = matchByName(name, list as (Lookup & { id: string })[], 'name')
+  const matched = matchDepartmentName(name, list as (Lookup & { id: string })[])
   if (matched) {
     cache.set(key, matched)
     return matched
   }
-    const code = await nextDepartmentCode(companyId)
+  const code = await nextDepartmentCode(companyId)
   const { data, error } = await supabase
     .from('departments')
     .insert({ company_id: companyId, code, name: name.trim(), is_active: true })
@@ -103,7 +110,7 @@ async function ensureDesignation(
   if (!key) throw new Error('Designation missing')
   const hit = cache.get(key)
   if (hit) return hit
-  const matched = matchByName(title, list as (Lookup & { id: string })[], 'title')
+  const matched = matchDesignationTitle(title, list as (Lookup & { id: string })[])
   if (matched) {
     cache.set(key, matched)
     return matched
@@ -136,28 +143,61 @@ function resolveDevice(row: StaffImportRow, devices: Device[]): string | null {
   return devices[0]?.id ?? null
 }
 
-async function upsertCompensation(employeeId: string, salary: number, canSetSalary: boolean): Promise<void> {
+async function clearDevicePinFromOthers(
+  companyId: string,
+  pin: number,
+  keepEmployeeId: string,
+  employeeIndex: EmployeeListRow[]
+): Promise<void> {
+  await supabase
+    .from('employees')
+    .update({ device_pin: null })
+    .eq('company_id', companyId)
+    .eq('device_pin', pin)
+    .neq('id', keepEmployeeId)
+
+  for (const e of employeeIndex) {
+    if (e.id !== keepEmployeeId && e.device_pin === pin) {
+      e.device_pin = null
+    }
+  }
+}
+
+async function upsertCompensation(
+  employeeId: string,
+  salary: number,
+  allowances: number,
+  payFrequency: string | null,
+  canSetSalary: boolean,
+  sourceLabel: string,
+  effectiveFrom?: string | null
+): Promise<void> {
   if (!canSetSalary || salary <= 0) return
-  const effectiveFrom = today()
+  const from = effectiveFrom?.trim() || today()
   const payload = {
     employee_id: employeeId,
-    effective_from: effectiveFrom,
+    effective_from: from,
     effective_to: null,
     basic: salary,
     house_rent: 0,
     medical: 0,
     conveyance: 0,
     utilities: 0,
-    other_allowances: 0,
-    pay_frequency: 'Monthly',
+    other_allowances: allowances,
+    other_allowances_enabled: allowances > 0,
+    house_rent_enabled: false,
+    medical_enabled: false,
+    conveyance_enabled: false,
+    utilities_enabled: false,
+    pay_frequency: payFrequency?.trim() || 'Monthly',
     currency: 'PKR',
-    revision_reason: 'Imported from Staff Status Report',
+    revision_reason: `Imported from ${sourceLabel}`,
   }
   const { data: existing } = await supabase
     .from('employee_salary_history')
     .select('id')
     .eq('employee_id', employeeId)
-    .eq('effective_from', effectiveFrom)
+    .eq('effective_from', from)
     .maybeSingle()
   if (existing?.id) {
     await supabase.from('employee_salary_history').update(payload).eq('id', existing.id)
@@ -166,25 +206,25 @@ async function upsertCompensation(employeeId: string, salary: number, canSetSala
   }
 }
 
-async function upsertStatutory(employeeId: string): Promise<void> {
-  const effectiveFrom = today()
+async function upsertStatutory(employeeId: string, effectiveFrom?: string | null): Promise<void> {
+  const from = effectiveFrom?.trim() || today()
   const payload = {
     employee_id: employeeId,
-    effective_from: effectiveFrom,
-    eobi_enabled: true,
+    effective_from: from,
+    eobi_enabled: false,
     eobi_custom_amount: null,
     pf_enabled: false,
     pf_employee_pct: null,
     pf_employer_pct: null,
     social_security_enabled: false,
     social_security_custom_amount: null,
-    income_tax_enabled: true,
+    income_tax_enabled: false,
   }
   const { data: existing } = await supabase
     .from('employee_statutory_enrollment')
     .select('id')
     .eq('employee_id', employeeId)
-    .eq('effective_from', effectiveFrom)
+    .eq('effective_from', from)
     .maybeSingle()
   if (existing?.id) {
     await supabase.from('employee_statutory_enrollment').update(payload).eq('id', existing.id)
@@ -245,9 +285,9 @@ export async function runStaffStatusImport(
   opts: ImportOpts
 ): Promise<StaffImportRunResult> {
   const [bRes, dRes, desRes, devRes, empCodesRes, empListRes] = await Promise.all([
-    supabase.from('branches').select('id, name').eq('is_active', true),
-    supabase.from('departments').select('id, name').eq('is_active', true),
-    supabase.from('designations').select('id, title').eq('is_active', true),
+    supabase.from('branches').select('id, name').eq('company_id', opts.companyId).eq('is_active', true),
+    supabase.from('departments').select('id, name').eq('company_id', opts.companyId).eq('is_active', true),
+    supabase.from('designations').select('id, title').eq('company_id', opts.companyId).eq('is_active', true),
     supabase
       .from('attendance_devices')
       .select('id, name, ip_address')
@@ -256,7 +296,7 @@ export async function runStaffStatusImport(
     supabase.from('employees').select('employee_code').eq('company_id', opts.companyId).order('employee_code', { ascending: false }).limit(50),
     supabase
       .from('employees')
-      .select('id, cnic, device_pin, first_name, last_name, full_name')
+      .select('id, employee_code, cnic, device_pin, first_name, last_name, full_name')
       .eq('company_id', opts.companyId),
   ])
 
@@ -287,20 +327,28 @@ export async function runStaffStatusImport(
   )
 
   const results: StaffImportRowResult[] = []
+  const reportsToPending: { employeeId: string; reportsToName: string }[] = []
   let created = 0
   let updated = 0
   let skipped = 0
   let duplicates = 0
   let errors = 0
 
+  const sourceLabel =
+    importRows[0]?.source === 'employee_directory' ? 'Employee Directory Report' : 'Staff Status Report'
+
   for (let i = 0; i < importRows.length; i++) {
     const row = importRows[i]
     opts.onProgress?.(i + 1, importRows.length)
 
     try {
-      const branchId = await ensureBranch(opts.companyId, row.branch || 'Head Office', branchCache, branches)
-      const departmentId = await ensureDepartment(opts.companyId, row.department, deptCache, departments)
-      const designationId = await ensureDesignation(opts.companyId, row.designation, desCache, designations)
+      if (!row.branch?.trim()) throw new Error('Branch missing in Excel row')
+      if (!row.department?.trim()) throw new Error('Department missing in Excel row')
+      if (!row.designation?.trim()) throw new Error('Designation missing in Excel row')
+
+      const branchId = await ensureBranch(opts.companyId, row.branch.trim(), branchCache, branches)
+      const departmentId = await ensureDepartment(opts.companyId, row.department.trim(), deptCache, departments)
+      const designationId = await ensureDesignation(opts.companyId, row.designation.trim(), desCache, designations)
       const deviceId = resolveDevice(row, devices)
 
       const fileKey = importRowDedupeKey(row, deviceId)
@@ -315,18 +363,10 @@ export async function runStaffStatusImport(
       }
       seenInFile.add(fileKey)
 
-      const dup = findDuplicateInList(row, employeeIndex)
+      const dup = findImportDuplicate(row, employeeIndex)
       const existingId = dup?.employeeId ?? null
 
-      let assignPin =
-        row.devicePin != null && row.devicePin > 0 ? row.devicePin : null
-      if (assignPin != null && pinTakenInCompany.has(assignPin)) {
-        const pinOwner = employeeIndex.find((e) => e.device_pin === assignPin)
-        const pinOwnerId = pinOwner?.id
-        if (!existingId || pinOwnerId !== existingId) {
-          assignPin = null
-        }
-      }
+      const assignPin = row.devicePin != null && row.devicePin > 0 ? row.devicePin : null
 
       const profile = {
         first_name: row.firstName,
@@ -335,8 +375,8 @@ export async function runStaffStatusImport(
         phone: row.mobile || null,
         cnic: row.cnic,
         gender: null,
-        date_of_birth: null,
-        date_of_joining: today(),
+        date_of_birth: row.dateOfBirth,
+        date_of_joining: row.dateOfJoining || today(),
         employment_status: 'Active' as const,
         branch_id: branchId,
         department_id: departmentId,
@@ -349,13 +389,30 @@ export async function runStaffStatusImport(
       let employeeId = existingId
       let pinWarning: string | undefined
 
+      if (employeeId && assignPin != null) {
+        await clearDevicePinFromOthers(opts.companyId, assignPin, employeeId, employeeIndex)
+      }
+
       if (existingId) {
-        const { error } = await supabase.from('employees').update(profile).eq('id', existingId)
+        // Also update employee_code if Excel has one and it matches what DB already has or DB has wrong one
+        const updatePayload: Record<string, unknown> = { ...profile }
+        if (row.employeeCode?.trim()) {
+          updatePayload.employee_code = row.employeeCode.trim()
+        }
+        const { error } = await supabase.from('employees').update(updatePayload).eq('id', existingId)
         if (error) throw new Error(error.message)
         const idx = employeeIndex.findIndex((e) => e.id === existingId)
-        const merged = { id: existingId, ...profile, full_name: row.fullName }
+        const merged: EmployeeListRow = {
+          id: existingId,
+          employee_code: row.employeeCode?.trim() || employeeIndex[idx]?.employee_code || null,
+          cnic: profile.cnic,
+          device_pin: assignPin,
+          first_name: profile.first_name,
+          last_name: profile.last_name,
+          full_name: row.fullName,
+        }
         if (idx >= 0) employeeIndex[idx] = { ...employeeIndex[idx], ...merged }
-        else employeeIndex.push(merged as EmployeeListRow)
+        else employeeIndex.push(merged)
         updated++
         results.push({
           row,
@@ -364,12 +421,14 @@ export async function runStaffStatusImport(
           message: dup?.label,
         })
       } else {
+        // Use exact code from Excel; only fall back to auto-generated if Excel has none
+        const newCode = row.employeeCode?.trim() || allocCode()
         const { data, error } = await supabase
           .from('employees')
           .insert({
             ...profile,
             company_id: opts.companyId,
-            employee_code: allocCode(),
+            employee_code: newCode,
           })
           .select('id')
           .single()
@@ -377,6 +436,7 @@ export async function runStaffStatusImport(
         employeeId = data.id
         employeeIndex.push({
           id: data.id,
+          employee_code: newCode,
           cnic: profile.cnic,
           device_pin: profile.device_pin,
           first_name: profile.first_name,
@@ -388,22 +448,25 @@ export async function runStaffStatusImport(
         results.push({ row, status: 'created', employeeId: data.id })
       }
 
-      if (
-        row.devicePin != null &&
-        row.devicePin > 0 &&
-        assignPin == null &&
-        !existingId
-      ) {
-        pinWarning = `Device PIN ${row.devicePin} already used — employee saved without PIN`
-      }
-
-      if (employeeId && deviceId && assignPin != null) {
-        try {
-          await syncEmployeeDevicePin(employeeId, opts.companyId, deviceId, assignPin)
-        } catch (pinErr) {
-          const msg = pinErr instanceof Error ? pinErr.message : 'Device PIN not linked'
-          pinWarning = pinWarning ? `${pinWarning}; ${msg}` : msg
+      // Sync device PIN mapping — force-assign even if another employee had this PIN
+      if (employeeId && assignPin != null) {
+        if (deviceId) {
+          try {
+            // Remove existing mapping for this PIN on this device first (force re-assign)
+            await supabase
+              .from('employee_device_pins')
+              .delete()
+              .eq('device_id', deviceId)
+              .eq('device_pin', assignPin)
+              .neq('employee_id', employeeId)
+            await syncEmployeeDevicePin(employeeId, opts.companyId, deviceId, assignPin)
+          } catch (pinErr) {
+            const msg = pinErr instanceof Error ? pinErr.message : 'Device PIN not linked'
+            pinWarning = pinWarning ? `${pinWarning}; ${msg}` : msg
+          }
         }
+        // Also update the employees.device_pin column to always reflect Excel value
+        await supabase.from('employees').update({ device_pin: assignPin }).eq('id', employeeId)
       }
 
       if (pinWarning) {
@@ -411,8 +474,20 @@ export async function runStaffStatusImport(
         if (last) last.message = last.message ? `${last.message}; ${pinWarning}` : pinWarning
       }
 
-      await upsertCompensation(employeeId!, row.salary, opts.canSetSalary)
-      await upsertStatutory(employeeId!)
+      if (row.reportsToName?.trim()) {
+        reportsToPending.push({ employeeId: employeeId!, reportsToName: row.reportsToName.trim() })
+      }
+
+      await upsertCompensation(
+        employeeId!,
+        row.salary,
+        row.allowances,
+        row.payFrequency,
+        opts.canSetSalary,
+        sourceLabel,
+        row.dateOfJoining
+      )
+      await upsertStatutory(employeeId!, row.dateOfJoining)
       await upsertImportDocument(employeeId!, row, opts.userId)
     } catch (e) {
       errors++
@@ -421,6 +496,13 @@ export async function runStaffStatusImport(
         status: 'error',
         message: e instanceof Error ? e.message : 'Import failed',
       })
+    }
+  }
+
+  for (const pending of reportsToPending) {
+    const managerId = matchEmployeeByName(pending.reportsToName, employeeIndex)
+    if (managerId && managerId !== pending.employeeId) {
+      await supabase.from('employees').update({ reports_to_id: managerId }).eq('id', pending.employeeId)
     }
   }
 

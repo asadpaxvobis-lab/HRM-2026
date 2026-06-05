@@ -5,11 +5,12 @@ import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { fmtPKR } from '@/lib/payroll'
+import { fmtPKR, defaultEmployeeStatutory, lineAllowedByStatutory, loadEmployeeStatutoryForPeriod, loadEmployeeCompAllowancesForPeriod, lineAllowedByCompensation, type EmployeeStatutory, type CompensationAllowances } from '@/lib/payroll'
 import { toast } from 'sonner'
 
 type Payslip = {
   id: string
+  employee_id: string
   employee_code: string
   employee_name: string
   designation: string | null
@@ -52,6 +53,8 @@ export function PayslipDetailPage() {
   const navigate = useNavigate()
   const [slip, setSlip] = useState<Payslip | null>(null)
   const [lines, setLines] = useState<Line[]>([])
+  const [statutory, setStatutory] = useState<EmployeeStatutory>(defaultEmployeeStatutory())
+  const [compAllowances, setCompAllowances] = useState<CompensationAllowances | null>(null)
   const [company, setCompany] = useState<{ name: string; legal_name: string | null; address: string | null } | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -74,7 +77,21 @@ export function PayslipDetailPage() {
     if (ps.error || !ps.data) {
       toast.error('Payslip not found', { description: ps.error?.message })
     } else {
-      setSlip(ps.data as Payslip)
+      const row = ps.data as Payslip
+      setSlip(row)
+      const periodEnd = row.payroll_periods?.period_end
+      const periodStart = row.payroll_periods?.period_start
+      if (row.employee_id && periodEnd && periodStart) {
+        const [stat, allowances] = await Promise.all([
+          loadEmployeeStatutoryForPeriod(row.employee_id, periodEnd),
+          loadEmployeeCompAllowancesForPeriod(row.employee_id, periodStart, periodEnd),
+        ])
+        setStatutory(stat)
+        setCompAllowances(allowances)
+      } else {
+        setStatutory(defaultEmployeeStatutory())
+        setCompAllowances(null)
+      }
     }
     setLines((ln.data ?? []) as Line[])
     if (co.data) setCompany(co.data as { name: string; legal_name: string | null; address: string | null })
@@ -94,9 +111,25 @@ export function PayslipDetailPage() {
   }
   if (!slip) return null
 
-  const earnings = lines.filter((l) => l.component_type === 'EARNING')
-  const deductions = lines.filter((l) => l.component_type === 'DEDUCTION')
-  const employer = lines.filter((l) => l.component_type === 'EMPLOYER_CONTRIB')
+  const earnings = lines.filter(
+    (l) =>
+      l.component_type === 'EARNING' &&
+      (!compAllowances || lineAllowedByCompensation(l.component_code, compAllowances))
+  )
+  const deductions = lines.filter(
+    (l) => l.component_type === 'DEDUCTION' && lineAllowedByStatutory(l.component_code, l.component_type, statutory)
+  )
+  const employer = lines.filter(
+    (l) =>
+      l.component_type === 'EMPLOYER_CONTRIB' && lineAllowedByStatutory(l.component_code, l.component_type, statutory)
+  )
+  const grossEarnings = earnings.reduce((s, l) => s + Number(l.amount), 0)
+  const totalDeductions = deductions.reduce((s, l) => s + Number(l.amount), 0)
+  const displayNetPay = Math.round((grossEarnings - totalDeductions) * 100) / 100
+  const showDeductions = deductions.length > 0
+  const showNetPay = showDeductions
+  const showLineWarning =
+    earnings.length === 0 && (Number(slip.basic) > 0 || Number(slip.gross_earnings) > 0)
 
   return (
     <div className="space-y-6">
@@ -184,7 +217,14 @@ export function PayslipDetailPage() {
           </div>
 
           {/* Earnings & Deductions side-by-side */}
-          <div className="grid sm:grid-cols-2 gap-6">
+          {showLineWarning && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+              This payslip has no line breakdown. Go to the payroll period, enable{' '}
+              <strong>Replace already posted payslips</strong>, and post again to recalculate earnings and
+              deductions.
+            </div>
+          )}
+          <div className={`grid gap-6 ${showDeductions ? 'sm:grid-cols-2' : 'sm:grid-cols-1'}`}>
             <div>
               <div className="text-sm font-semibold mb-2 pb-1 border-b">Earnings</div>
               <table className="w-full text-sm">
@@ -201,51 +241,51 @@ export function PayslipDetailPage() {
                     </tr>
                   ))}
                   <tr className="font-semibold border-t-2">
-                    <td className="py-2">Gross earnings</td>
-                    <td className="py-2 text-right tabular-nums">{fmtPKR(Number(slip.gross_earnings))}</td>
+                    <td className="py-2">{showNetPay ? 'Gross earnings' : 'Amount payable'}</td>
+                    <td className="py-2 text-right tabular-nums">{fmtPKR(grossEarnings)}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
-            <div>
-              <div className="text-sm font-semibold mb-2 pb-1 border-b">Deductions</div>
-              <table className="w-full text-sm">
-                <tbody className="divide-y">
-                  {deductions.map((l) => (
-                    <tr key={l.id}>
-                      <td className="py-1.5">
-                        <div>{l.component_name}</div>
-                        {l.formula_used && (
-                          <div className="text-xs text-muted-foreground">{l.formula_used}</div>
-                        )}
-                      </td>
-                      <td className="py-1.5 text-right tabular-nums">{fmtPKR(Number(l.amount))}</td>
+            {showDeductions && (
+              <div>
+                <div className="text-sm font-semibold mb-2 pb-1 border-b">Deductions</div>
+                <table className="w-full text-sm">
+                  <tbody className="divide-y">
+                    {deductions.map((l) => (
+                      <tr key={l.id}>
+                        <td className="py-1.5">
+                          <div>{l.component_name}</div>
+                          {l.formula_used && (
+                            <div className="text-xs text-muted-foreground">{l.formula_used}</div>
+                          )}
+                        </td>
+                        <td className="py-1.5 text-right tabular-nums">{fmtPKR(Number(l.amount))}</td>
+                      </tr>
+                    ))}
+                    <tr className="font-semibold border-t-2">
+                      <td className="py-2">Total deductions</td>
+                      <td className="py-2 text-right tabular-nums">{fmtPKR(totalDeductions)}</td>
                     </tr>
-                  ))}
-                  <tr className="font-semibold border-t-2">
-                    <td className="py-2">Total deductions</td>
-                    <td className="py-2 text-right tabular-nums">{fmtPKR(Number(slip.total_deductions))}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
-          {/* Net pay */}
-          <div className="rounded-lg border-2 border-primary/30 bg-primary/5 p-4 flex items-center justify-between">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">Net pay</div>
-              <div className="text-3xl font-bold tabular-nums text-primary">{fmtPKR(Number(slip.net_pay))}</div>
-            </div>
-            <div className="text-xs text-right text-muted-foreground">
-              In words:
-              <div className="max-w-xs text-foreground font-medium">
-                {/* Simple PKR words (rounded) */}
-                {numberInWordsPKR(Number(slip.net_pay))}
+          {showNetPay && (
+            <div className="rounded-lg border-2 border-primary/30 bg-primary/5 p-4 flex items-center justify-between">
+              <div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">Net pay</div>
+                <div className="text-3xl font-bold tabular-nums text-primary">{fmtPKR(displayNetPay)}</div>
+              </div>
+              <div className="text-xs text-right text-muted-foreground">
+                In words:
+                <div className="max-w-xs text-foreground font-medium">{numberInWordsPKR(displayNetPay)}</div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Employer contributions (info) */}
           {employer.length > 0 && (

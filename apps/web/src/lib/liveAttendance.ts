@@ -17,12 +17,45 @@ export type LiveAttendanceCounts = {
   absent: number
 }
 
+export type LiveDisplayStatus =
+  | 'Present'
+  | 'Late'
+  | 'Absent'
+  | 'Leave'
+  | 'Weekly Off'
+  | 'Holiday'
+  | 'Half Day'
+
+export const liveDisplayStatusClass: Record<LiveDisplayStatus, string> = {
+  Present: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300',
+  Late: 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300',
+  Absent: 'bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-300',
+  Leave: 'bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-300',
+  'Weekly Off': 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  Holiday: 'bg-sky-100 text-sky-800 dark:bg-sky-950/50 dark:text-sky-300',
+  'Half Day': 'bg-orange-100 text-orange-800 dark:bg-orange-950/50 dark:text-orange-300',
+}
+
+/** Human-readable status for live attendance cards (Present / Absent / Leave, etc.). */
+export function getLiveDisplayStatus(d?: LiveAttendanceDaily | null): LiveDisplayStatus {
+  if (!d) return 'Absent'
+
+  const status = (d.status ?? '').trim()
+  if (status === 'Leave' || status.toLowerCase() === 'leave') return 'Leave'
+  if (d.is_holiday || status === 'Holiday') return 'Holiday'
+  if (d.is_weekly_off || status === 'Weekly Off') return 'Weekly Off'
+  if (status === 'Half Day') return 'Half Day'
+  if (d.first_in) return status === 'Late' ? 'Late' : 'Present'
+  if (status === 'Late' || status === 'Present') return status as 'Late' | 'Present'
+  return 'Absent'
+}
+
 /** Classify today's attendance for live board (in / out / leave / absent / break). */
 export function classifyLiveAttendance(d?: LiveAttendanceDaily | null): LiveAttendanceBucket {
   if (!d) return 'absent'
 
   const status = (d.status ?? '').trim()
-  if (status === 'Leave' || status.toLowerCase().includes('leave')) return 'leave'
+  if (status === 'Leave' || status.toLowerCase() === 'leave') return 'leave'
   if (d.is_holiday || status === 'Holiday') return 'leave'
   if (d.is_weekly_off || status === 'Weekly Off') return 'leave'
 

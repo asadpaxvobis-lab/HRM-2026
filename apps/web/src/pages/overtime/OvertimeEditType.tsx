@@ -12,7 +12,16 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { toast } from 'sonner'
 import { computeOtPayAmount, formatPkr } from '@/lib/overtimePay'
-import { OT_TYPE_OPTIONS, defaultMultiplierForType, type OtTypeCode } from '@/lib/overtimeTypes'
+import {
+  buildOtTypeOptions,
+  defaultMultiplierForType,
+  fetchOtMultipliers,
+  mergeOtMultipliers,
+  multiplierForPendingRow,
+  saveOtMultipliers,
+  type OtMultipliers,
+  type OtTypeCode,
+} from '@/lib/overtimeTypes'
 
 type OT = {
   id: string
@@ -33,16 +42,28 @@ type RowEdit = {
 }
 
 export function OvertimeEditTypePage() {
-  const { hasPermission } = useAuth()
+  const { appUser, hasPermission } = useAuth()
   const canEdit = hasPermission('overtime.approve') || hasPermission('overtime.config')
   const [rows, setRows] = useState<OT[]>([])
   const [edits, setEdits] = useState<Record<string, RowEdit>>({})
+  const [companyMult, setCompanyMult] = useState<OtMultipliers>(mergeOtMultipliers())
+  const [defaultEdits, setDefaultEdits] = useState<OtMultipliers>(mergeOtMultipliers())
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [recalcBusy, setRecalcBusy] = useState(false)
+  const [savingDefaults, setSavingDefaults] = useState(false)
+
+  const typeOptions = buildOtTypeOptions(companyMult)
 
   async function load() {
     setLoading(true)
+    let mult = mergeOtMultipliers()
+    if (appUser?.company_id) {
+      mult = await fetchOtMultipliers(appUser.company_id)
+      setCompanyMult(mult)
+      setDefaultEdits(mult)
+    }
+    const options = buildOtTypeOptions(mult)
     const { data, error } = await supabase
       .from('overtime_requests')
       .select(
@@ -66,10 +87,10 @@ export function OvertimeEditTypePage() {
     setRows(mapped)
     const next: Record<string, RowEdit> = {}
     for (const r of mapped) {
-      const t = (OT_TYPE_OPTIONS.some((o) => o.value === r.ot_type) ? r.ot_type : 'NORMAL') as OtTypeCode
+      const t = (options.some((o) => o.value === r.ot_type) ? r.ot_type : 'NORMAL') as OtTypeCode
       next[r.id] = {
         ot_type: t,
-        rate_multiplier: Number(r.rate_multiplier) || defaultMultiplierForType(t),
+        rate_multiplier: multiplierForPendingRow(t, r.rate_multiplier, mult),
       }
     }
     setEdits(next)
@@ -78,16 +99,42 @@ export function OvertimeEditTypePage() {
 
   useEffect(() => {
     void load()
-  }, [])
+  }, [appUser?.company_id])
 
   const onTypeChange = (id: string, otType: OtTypeCode) => {
     setEdits((prev) => ({
       ...prev,
       [id]: {
         ot_type: otType,
-        rate_multiplier: defaultMultiplierForType(otType),
+        rate_multiplier: defaultMultiplierForType(otType, companyMult),
       },
     }))
+  }
+
+  async function saveDefaultMultipliers() {
+    if (!appUser?.company_id) return
+    setSavingDefaults(true)
+    const merged = mergeOtMultipliers(defaultEdits)
+    const { error } = await saveOtMultipliers(appUser.company_id, merged)
+    setSavingDefaults(false)
+    if (error) {
+      toast.error('Could not save defaults', { description: error })
+      return
+    }
+    setCompanyMult(merged)
+    await writeAuditLog({
+      action: 'UPDATE',
+      entityType: 'app_settings',
+      entityId: appUser.company_id,
+      after: { ot_multipliers: merged },
+    })
+    toast.success('Default multipliers saved')
+    void load()
+  }
+
+  function resetDefaultMultipliers() {
+    const merged = mergeOtMultipliers()
+    setDefaultEdits(merged)
   }
 
   async function saveRow(ot: OT) {
@@ -138,16 +185,12 @@ export function OvertimeEditTypePage() {
     let ok = 0
     let fail = 0
     for (const ot of rows) {
+      const otType = (typeOptions.some((o) => o.value === ot.ot_type) ? ot.ot_type : 'NORMAL') as OtTypeCode
       const edit = edits[ot.id] ?? {
-        ot_type: (OT_TYPE_OPTIONS.some((o) => o.value === ot.ot_type) ? ot.ot_type : 'NORMAL') as OtTypeCode,
-        rate_multiplier:
-          Number(ot.rate_multiplier) ||
-          defaultMultiplierForType(
-            (OT_TYPE_OPTIONS.some((o) => o.value === ot.ot_type) ? ot.ot_type : 'NORMAL') as OtTypeCode
-          ),
+        ot_type: otType,
+        rate_multiplier: multiplierForPendingRow(otType, ot.rate_multiplier, companyMult),
       }
-      const mult =
-        edit.ot_type === 'NORMAL' && edit.rate_multiplier >= 1.5 ? 1.0 : edit.rate_multiplier
+      const mult = edit.rate_multiplier
 
       const pay = await computeOtPayAmount(
         supabase,
@@ -273,7 +316,7 @@ export function OvertimeEditTypePage() {
                             value={edit.ot_type}
                             onChange={(e) => onTypeChange(r.id, e.target.value as OtTypeCode)}
                           >
-                            {OT_TYPE_OPTIONS.map((o) => (
+                            {typeOptions.map((o) => (
                               <option key={o.value} value={o.value}>
                                 {o.label} (×{o.multiplier})
                               </option>
@@ -318,16 +361,52 @@ export function OvertimeEditTypePage() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base text-sm">Default multipliers (reference)</CardTitle>
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div>
+            <CardTitle className="text-base">Default multipliers (company)</CardTitle>
+            <CardDescription>
+              Edit rates used when OT type is selected or auto-created from attendance. Saved per company in
+              settings.
+            </CardDescription>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button variant="outline" size="sm" onClick={resetDefaultMultipliers}>
+              Reset
+            </Button>
+            <Button size="sm" disabled={savingDefaults} onClick={() => void saveDefaultMultipliers()}>
+              {savingDefaults ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save defaults
+            </Button>
+          </div>
         </CardHeader>
-        <CardContent className="text-sm text-muted-foreground space-y-1">
-          {OT_TYPE_OPTIONS.map((o) => (
-            <div key={o.value}>
-              <strong>{o.label}</strong> — ×{o.multiplier}
-            </div>
-          ))}
-          <p className="pt-2 text-xs">Attendance auto-OT picks type from holiday / weekend / normal day.</p>
+        <CardContent>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {typeOptions.map((o) => (
+              <div key={o.value} className="space-y-2">
+                <Label>{o.label}</Label>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">×</span>
+                  <Input
+                    type="number"
+                    step="0.1"
+                    min={0.5}
+                    max={10}
+                    value={defaultEdits[o.value]}
+                    onChange={(e) =>
+                      setDefaultEdits((prev) => ({
+                        ...prev,
+                        [o.value]: +e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="pt-4 text-xs text-muted-foreground">
+            Pending rows: change OT type dropdown to apply these defaults, or edit multiplier per row and click Save.
+            Attendance auto-OT uses these defaults after save + re-aggregate.
+          </p>
         </CardContent>
       </Card>
     </div>

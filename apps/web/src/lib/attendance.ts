@@ -258,3 +258,104 @@ export function fmtMinutes(mins: number, alwaysShow = false): string {
   const m = mins % 60
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
+
+export type PunchLike = { punch_at: string; punch_type: string }
+
+export type ShiftResolveLike = {
+  start_time?: string
+  end_time?: string
+  is_night?: boolean
+}
+
+function minutesFromMidnightInTz(iso: string, tz = 'Asia/Karachi'): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(iso))
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+  return h * 60 + m
+}
+
+function parseClockToMinutes(timeStr: string): number {
+  const [h, m] = timeStr.slice(0, 5).split(':').map(Number)
+  return (h ?? 0) * 60 + (m ?? 0)
+}
+
+/**
+ * Classify an ambiguous (auto) punch as IN or OUT by proximity to shift start vs end.
+ */
+export function classifyPunchByShift(
+  punchAt: string,
+  shift?: ShiftResolveLike | null,
+  tz = 'Asia/Karachi'
+): 'in' | 'out' {
+  const punchMin = minutesFromMidnightInTz(punchAt, tz)
+  const cfg = normalizeShift(shift)
+  const startMin = parseClockToMinutes(cfg.start_time!)
+  let endMin = parseClockToMinutes(cfg.end_time!)
+  const isNight = cfg.is_night ?? false
+
+  if (isNight && endMin <= startMin) {
+    let adjustedPunch = punchMin
+    if (punchMin < startMin && punchMin <= endMin) adjustedPunch = punchMin + 24 * 60
+    const adjustedEnd = endMin + 24 * 60
+    const mid = (startMin + adjustedEnd) / 2
+    return adjustedPunch < mid ? 'in' : 'out'
+  }
+
+  const distStart = Math.abs(punchMin - startMin)
+  const distEnd = Math.abs(punchMin - endMin)
+  if (distStart === distEnd) {
+    const mid = (startMin + endMin) / 2
+    return punchMin < mid ? 'in' : 'out'
+  }
+  return distStart < distEnd ? 'in' : 'out'
+}
+
+function punchRole(p: PunchLike, shift?: ShiftResolveLike | null, tz = 'Asia/Karachi'): 'in' | 'out' {
+  if (p.punch_type === 'in') return 'in'
+  if (p.punch_type === 'out') return 'out'
+  return classifyPunchByShift(p.punch_at, shift, tz)
+}
+
+export function nextDateIso(dateStr: string): string {
+  const [y, mo, d] = dateStr.split('-').map(Number)
+  return new Date(Date.UTC(y, mo - 1, d + 1)).toISOString().slice(0, 10)
+}
+
+/** Local calendar date for a punch in company timezone (default Asia/Karachi). */
+export function punchOnDate(punchAt: string, dateStr: string, tz = 'Asia/Karachi'): boolean {
+  const local = new Date(punchAt).toLocaleDateString('en-CA', { timeZone: tz })
+  return local === dateStr
+}
+
+/**
+ * Derive first IN / last OUT from punches.
+ * Explicit in/out from device is kept; auto punches are classified by shift window.
+ */
+export function resolveInOutFromPunches(
+  punches: PunchLike[],
+  options?: { shift?: ShiftResolveLike | null; tz?: string }
+): {
+  first_in: string | null
+  last_out: string | null
+} {
+  if (!punches.length) return { first_in: null, last_out: null }
+
+  const shift = options?.shift
+  const tz = options?.tz ?? 'Asia/Karachi'
+  const sorted = [...punches].sort(
+    (a, b) => new Date(a.punch_at).getTime() - new Date(b.punch_at).getTime()
+  )
+
+  const ins = sorted.filter((p) => punchRole(p, shift, tz) === 'in')
+  const outs = sorted.filter((p) => punchRole(p, shift, tz) === 'out')
+
+  return {
+    first_in: ins.length ? ins[0].punch_at : null,
+    last_out: outs.length ? outs[outs.length - 1].punch_at : null,
+  }
+}

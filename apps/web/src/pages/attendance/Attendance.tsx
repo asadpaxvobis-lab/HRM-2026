@@ -34,6 +34,9 @@ import {
   isCompleteDatetimeLocal,
   saveManualAttendanceDay,
   dateFromEditInputs,
+  nextDateIso,
+  punchOnDate,
+  resolveInOutFromPunches,
 } from '@/lib/attendance'
 import { toCsv, downloadCsv } from '@/lib/csv'
 
@@ -142,6 +145,71 @@ function CompulsoryField({
   )
 }
 
+function SearchableEmployeePicker({
+  employees,
+  value,
+  onChange,
+  query,
+  onQueryChange,
+}: {
+  employees: Employee[]
+  value: string
+  onChange: (id: string) => void
+  query: string
+  onQueryChange: (q: string) => void
+}) {
+  const selected = employees.find((e) => e.id === value)
+
+  return (
+    <div className="rounded-md border overflow-hidden bg-background">
+      <div className="relative border-b bg-muted/30">
+        <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+        <Input
+          className="border-0 rounded-none pl-9 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+          placeholder="Type to search, scroll to pick…"
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+        />
+      </div>
+      <div className="max-h-[min(240px,40vh)] overflow-y-auto overscroll-contain">
+        {employees.length === 0 ? (
+          <p className="px-3 py-8 text-sm text-muted-foreground text-center">No employees match your search.</p>
+        ) : (
+          <ul role="listbox" aria-label="Employees" className="divide-y">
+            {employees.map((e) => {
+              const isSelected = value === e.id
+              return (
+                <li key={e.id}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    className={cn(
+                      'w-full text-left px-3 py-2.5 text-sm hover:bg-accent/60 transition-colors',
+                      isSelected && 'bg-primary/10 ring-1 ring-inset ring-primary/30 font-medium'
+                    )}
+                    onClick={() => onChange(e.id)}
+                  >
+                    <span className="font-mono text-xs text-muted-foreground">{e.employee_code}</span>
+                    <span className="mx-1.5 text-muted-foreground/60">·</span>
+                    <span>{e.full_name}</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+      <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground bg-muted/20 flex justify-between gap-2">
+        <span>{employees.length} shown</span>
+        <span className="truncate">
+          {selected ? `Selected: ${selected.full_name}` : 'Click an employee below'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 /** Working day rows where in/out punches are expected (not leave, holiday, or weekly off). */
 function expectsPunches(status: string, d?: Daily) {
   if (d?.is_holiday || d?.is_weekly_off) return false
@@ -176,10 +244,25 @@ function minutesColumnValue(minutes: number, show: boolean): string {
 }
 
 function getDisplayStatus(d: Daily | undefined, dateStr: string): string {
+  if (d?.is_holiday) return 'Holiday'
+  if (d?.is_weekly_off) return 'Weekly Off'
   const status = d?.status ?? 'Absent'
   const m = rowMetrics(d, dateStr)
   if (d?.first_in && status === 'Present' && m.late_minutes > 0) return 'Late'
   return status
+}
+
+function employeeMatchesQuery(e: Employee, q: string): boolean {
+  if (!q) return true
+  const haystack = [
+    e.full_name,
+    e.employee_code,
+    e.departments?.name ?? '',
+    e.branches?.name ?? '',
+  ]
+    .join(' ')
+    .toLowerCase()
+  return q.split(/\s+/).every((token) => haystack.includes(token))
 }
 
 export function AttendancePage() {
@@ -197,6 +280,7 @@ export function AttendancePage() {
   const [branchFilter, setBranchFilter] = useState('')
   const [deptFilter, setDeptFilter] = useState('')
   const [punchOpen, setPunchOpen] = useState(false)
+  const [punchEmpQuery, setPunchEmpQuery] = useState('')
   const [punchForm, setPunchForm] = useState({
     employee_id: '',
     punch_at: '',
@@ -223,7 +307,7 @@ export function AttendancePage() {
 
   async function load() {
     setLoading(true)
-    const [emp, br, dp, daily] = await Promise.all([
+    const [emp, br, dp, daily, punches] = await Promise.all([
       supabase
         .from('employees')
         .select('id, employee_code, full_name, branch_id, department_id, branches(name), departments(name)')
@@ -237,6 +321,11 @@ export function AttendancePage() {
           'id, employee_id, attendance_date, status, first_in, last_out, worked_minutes, late_minutes, early_out_minutes, overtime_minutes, is_weekly_off, is_holiday, scheduled_start, scheduled_end, notes, shifts(code, name, start_time, end_time, break_minutes, grace_late_minutes, grace_early_minutes, is_night)'
         )
         .eq('attendance_date', date),
+      supabase
+        .from('attendance_punches')
+        .select('employee_id, punch_at, punch_type')
+        .gte('punch_at', `${date}T00:00:00+05:00`)
+        .lt('punch_at', `${nextDateIso(date)}T00:00:00+05:00`),
     ])
     if (emp.data) {
       const list = emp.data.map((r: Record<string, unknown>) => {
@@ -249,9 +338,24 @@ export function AttendancePage() {
     setBranches((br.data ?? []) as Branch[])
     setDepartments((dp.data ?? []) as Department[])
     if (daily.data) {
+      const punchesByEmp = new Map<string, { punch_at: string; punch_type: string }[]>()
+      for (const p of punches.data ?? []) {
+        const row = p as { employee_id: string; punch_at: string; punch_type: string }
+        if (!punchOnDate(row.punch_at, date)) continue
+        const list = punchesByEmp.get(row.employee_id) ?? []
+        list.push({ punch_at: row.punch_at, punch_type: row.punch_type })
+        punchesByEmp.set(row.employee_id, list)
+      }
+
       const dailyRows = daily.data.map((r: Record<string, unknown>) => {
         const sh = r.shifts
-        return { ...r, shifts: Array.isArray(sh) ? sh[0] : sh } as Daily
+        const daily = { ...r, shifts: Array.isArray(sh) ? sh[0] : sh } as Daily
+        const dayPunches = punchesByEmp.get(daily.employee_id)
+        if (dayPunches?.length) {
+          const resolved = resolveInOutFromPunches(dayPunches, { shift: daily.shifts })
+          return { ...daily, first_in: resolved.first_in, last_out: resolved.last_out }
+        }
+        return daily
       })
       setRows(dailyRows)
     }
@@ -273,10 +377,20 @@ export function AttendancePage() {
     return employees.filter((e) => {
       if (branchFilter && e.branch_id !== branchFilter) return false
       if (deptFilter && e.department_id !== deptFilter) return false
-      if (q && !e.full_name.toLowerCase().includes(q) && !e.employee_code.toLowerCase().includes(q)) return false
+      if (!employeeMatchesQuery(e, q)) return false
       return true
     })
   }, [employees, query, branchFilter, deptFilter])
+
+  const punchEmployeeOptions = useMemo(() => {
+    const q = punchEmpQuery.trim().toLowerCase()
+    const filtered = q ? employees.filter((e) => employeeMatchesQuery(e, q)) : employees
+    if (punchForm.employee_id && !filtered.some((e) => e.id === punchForm.employee_id)) {
+      const sel = employees.find((e) => e.id === punchForm.employee_id)
+      if (sel) return [sel, ...filtered]
+    }
+    return filtered
+  }, [employees, punchEmpQuery, punchForm.employee_id])
 
   const counts = useMemo(() => {
     const acc: Record<string, number> = { Present: 0, Late: 0, Absent: 0, Leave: 0, 'Weekly Off': 0, Holiday: 0, 'Half Day': 0 }
@@ -289,17 +403,25 @@ export function AttendancePage() {
   }, [filtered, byEmployee, date])
 
   const statusGroups = useMemo(() => {
-    const present: Employee[] = []
-    const late: Employee[] = []
-    const absent: Employee[] = []
+    const groups = Object.fromEntries(ATTENDANCE_STATUSES.map((s) => [s, [] as Employee[]])) as Record<
+      string,
+      Employee[]
+    >
     for (const e of filtered) {
       const status = getDisplayStatus(byEmployee.get(e.id), date)
-      if (status === 'Present') present.push(e)
-      else if (status === 'Late') late.push(e)
-      else if (status === 'Absent') absent.push(e)
+      if (groups[status]) groups[status].push(e)
+      else groups.Absent.push(e)
     }
-    return { present, late, absent }
+    return groups
   }, [filtered, byEmployee, date])
+
+  const visibleStatuses = useMemo(() => {
+    const q = query.trim()
+    if (q) {
+      return ATTENDANCE_STATUSES.filter((s) => (statusGroups[s]?.length ?? 0) > 0)
+    }
+    return ATTENDANCE_STATUSES
+  }, [statusGroups, query])
 
   const onRecompute = async () => {
     if (!appUser) return
@@ -319,6 +441,7 @@ export function AttendancePage() {
   const openPunch = () => {
     const now = new Date()
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+    setPunchEmpQuery('')
     setPunchForm({ employee_id: '', punch_at: local, punch_type: 'in', notes: '' })
     setPunchOpen(true)
   }
@@ -467,6 +590,10 @@ export function AttendancePage() {
   const submitPunch = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!appUser) return
+    if (!punchForm.employee_id) {
+      toast.error('Select an employee')
+      return
+    }
     setBusy(true)
     const payload = {
       company_id: appUser.company_id,
@@ -694,9 +821,7 @@ export function AttendancePage() {
             </div>
           ) : (
             <div className="space-y-4 p-4">
-              {renderStatusTable('Present', statusGroups.present)}
-              {renderStatusTable('Late', statusGroups.late)}
-              {renderStatusTable('Absent', statusGroups.absent)}
+              {visibleStatuses.map((status) => renderStatusTable(status, statusGroups[status] ?? []))}
             </div>
           )}
         </CardContent>
@@ -887,7 +1012,13 @@ export function AttendancePage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={punchOpen} onOpenChange={setPunchOpen}>
+      <Dialog
+        open={punchOpen}
+        onOpenChange={(open) => {
+          setPunchOpen(open)
+          if (!open) setPunchEmpQuery('')
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add manual punch</DialogTitle>
@@ -897,18 +1028,13 @@ export function AttendancePage() {
           </DialogHeader>
           <form onSubmit={submitPunch} className="space-y-4">
             <CompulsoryField label="Employee">
-              <Select
+              <SearchableEmployeePicker
+                employees={punchEmployeeOptions}
                 value={punchForm.employee_id}
-                onChange={(e) => setPunchForm({ ...punchForm, employee_id: e.target.value })}
-                required
-              >
-                <option value="">Select employee</option>
-                {employees.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.employee_code} — {e.full_name}
-                  </option>
-                ))}
-              </Select>
+                onChange={(id) => setPunchForm({ ...punchForm, employee_id: id })}
+                query={punchEmpQuery}
+                onQueryChange={setPunchEmpQuery}
+              />
             </CompulsoryField>
             <div className="grid sm:grid-cols-2 gap-4">
               <CompulsoryField label="Punch time">

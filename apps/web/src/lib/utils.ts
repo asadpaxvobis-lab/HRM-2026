@@ -5,15 +5,32 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** Calendar date in local timezone as YYYY-MM-DD (avoids UTC shift from toISOString). */
+export function toLocalDateIso(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function codeNumericSuffix(code: string): number {
+  const m = code.match(/(\d+)\s*$/)
+  return m ? parseInt(m[1], 10) : 0
+}
+
 /** Sort master records by trailing numeric suffix (DES-001, DEPT-002, BR-003, …). */
 export function sortByMasterCode<T extends { code: string }>(rows: T[]): T[] {
-  const num = (code: string) => {
-    const m = code.match(/(\d+)\s*$/)
-    return m ? parseInt(m[1], 10) : 0
-  }
   return [...rows].sort((a, b) => {
-    const diff = num(a.code) - num(b.code)
+    const diff = codeNumericSuffix(a.code) - codeNumericSuffix(b.code)
     return diff !== 0 ? diff : a.code.localeCompare(b.code)
+  })
+}
+
+/** Sort employees by EMP-0001, EMP-0002, … EMP-0010 order. */
+export function sortByEmployeeCode<T extends { employee_code: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const diff = codeNumericSuffix(a.employee_code) - codeNumericSuffix(b.employee_code)
+    return diff !== 0 ? diff : a.employee_code.localeCompare(b.employee_code)
   })
 }
 

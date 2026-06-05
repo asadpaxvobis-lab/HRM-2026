@@ -34,7 +34,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { toast } from 'sonner'
-import { runPayrollForPeriod, fmtPKR } from '@/lib/payroll'
+import { runPayrollForPeriod, validatePayrollRun, fmtPKR } from '@/lib/payroll'
+import { toLocalDateIso } from '@/lib/utils'
 
 type Period = {
   id: string
@@ -95,7 +96,7 @@ function defaultMonthlyPeriod(): {
   const start = new Date(y, m, 1)
   const end = new Date(y, m + 1, 0)
   const pay = new Date(y, m + 1, 5)
-  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  const iso = toLocalDateIso
   const label = start.toLocaleString(undefined, { month: 'long', year: 'numeric' })
   return {
     name: label,
@@ -206,6 +207,20 @@ export function PayrollPage() {
       )
       if (!yes) return
     }
+
+    try {
+      const validation = await validatePayrollRun(period.id, appUser.company_id)
+      if (validation.warnings.length > 0) {
+        const proceed = window.confirm(
+          `${validation.warnings.join('\n\n')}\n\nContinue with payroll run anyway?`
+        )
+        if (!proceed) return
+      }
+    } catch (err) {
+      toast.error('Validation failed', { description: (err as Error).message })
+      return
+    }
+
     setRunningId(period.id)
     try {
       const { runId, payslipCount } = await runPayrollForPeriod(period.id, appUser.company_id)
@@ -226,16 +241,24 @@ export function PayrollPage() {
   }
 
   const deletePeriod = async (period: Period) => {
-    if (period.status !== 'DRAFT') {
-      toast.error('Only DRAFT periods can be deleted')
-      return
-    }
-    if (!window.confirm(`Delete ${period.name}?`)) return
+    const r = latestRunByPeriod.get(period.id)
+    const payslipNote = r
+      ? `\n\nThis will permanently delete ${r.total_employees} payslip(s) and all related data.`
+      : ''
+    const msg = `Delete payroll period "${period.name}" (${period.code})?\nStatus: ${period.status}${payslipNote}`
+    if (!window.confirm(msg)) return
+
     const { error } = await supabase.from('payroll_periods').delete().eq('id', period.id)
     if (error) {
       toast.error('Delete failed', { description: error.message })
       return
     }
+    await writeAuditLog({
+      action: 'DELETE',
+      entityType: 'payroll_period',
+      entityId: period.id,
+      before: { code: period.code, name: period.name, status: period.status },
+    })
     toast.success('Period deleted')
     void load()
   }
@@ -323,15 +346,10 @@ export function PayrollPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => void runPayroll(p)}
-                          disabled={runningId === p.id}
+                          onClick={() => navigate(`/payroll/${p.id}?generate=1`)}
                         >
-                          {runningId === p.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <PlayCircle className="h-4 w-4" />
-                          )}
-                          Run
+                          <PlayCircle className="h-4 w-4" />
+                          Generate
                         </Button>
                       )}
                       {r && (
@@ -339,8 +357,14 @@ export function PayrollPage() {
                           <ChevronRight className="h-4 w-4" />
                         </Button>
                       )}
-                      {canRun && p.status === 'DRAFT' && !r && (
-                        <Button size="sm" variant="ghost" onClick={() => void deletePeriod(p)}>
+                      {canRun && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => void deletePeriod(p)}
+                          title="Delete period"
+                        >
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       )}
@@ -403,6 +427,9 @@ export function PayrollPage() {
                   value={form.period_end}
                   onChange={(e) => setForm({ ...form, period_end: e.target.value })}
                 />
+                <p className="text-xs text-muted-foreground">
+                  For a full month use 1st to last day (e.g. May 2026 = 2026-05-01 → 2026-05-31).
+                </p>
               </div>
               <div className="space-y-2 sm:col-span-2">
                 <Label>Notes</Label>

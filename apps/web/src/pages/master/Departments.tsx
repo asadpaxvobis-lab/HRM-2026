@@ -1,14 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, Briefcase, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Plus, Pencil, RefreshCw, Loader2, Briefcase, Trash2, Search } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
-import {
-  hasDepartmentCodeIssues,
-  nextDepartmentCode,
-  STANDARD_DEPARTMENTS,
-  syncStandardDepartments,
-} from '@/lib/departmentCodes'
+import { nextDepartmentCode, STANDARD_DEPARTMENTS } from '@/lib/departmentCodes'
 import { PageHeader } from '@/components/master/PageHeader'
 import { HasPermission } from '@/components/HasPermission'
 import { Button } from '@/components/ui/button'
@@ -42,13 +37,13 @@ export function DepartmentsPage() {
   const canCreate = hasPermission('department.create')
   const canUpdate = hasPermission('department.update')
   const canDelete = hasPermission('department.delete')
-  const canSync = hasPermission('department.update') || hasPermission('department.create')
   const [rows, setRows] = useState<Dept[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Dept | null>(null)
   const [form, setForm] = useState({ code: '', name: '', parent_id: '', is_active: true })
   const [busy, setBusy] = useState(false)
+  const [query, setQuery] = useState('')
 
   const load = useCallback(async () => {
     if (!appUser?.company_id) return
@@ -64,29 +59,7 @@ export function DepartmentsPage() {
         return
       }
 
-      let list = sortByMasterCode((data ?? []) as (Dept & { created_at?: string })[])
-
-      if (canSync) {
-        try {
-          const { created, updated } = await syncStandardDepartments(appUser.company_id)
-          const { data: refreshed, error: reloadErr } = await supabase
-            .from('departments')
-            .select('id, code, name, parent_id, is_active')
-          if (reloadErr) toast.error('Reload failed', { description: reloadErr.message })
-          else list = sortByMasterCode((refreshed ?? []) as Dept[])
-          if (created > 0 || updated > 0) {
-            toast.success('Departments applied', {
-              description: `${created} added, ${updated} updated — DEPT-001 to DEPT-${String(STANDARD_DEPARTMENTS.length).padStart(3, '0')}`,
-            })
-          }
-        } catch (syncErr) {
-          toast.error('Could not apply departments', {
-            description: syncErr instanceof Error ? syncErr.message : 'Unknown error',
-          })
-        }
-      }
-
-      setRows(list)
+      setRows(sortByMasterCode((data ?? []) as (Dept & { created_at?: string })[]))
     } catch (e) {
       toast.error('Failed to load departments', {
         description: e instanceof Error ? e.message : 'Unknown error',
@@ -95,13 +68,26 @@ export function DepartmentsPage() {
     } finally {
       setLoading(false)
     }
-  }, [appUser?.company_id, canSync])
+  }, [appUser?.company_id])
 
   useEffect(() => {
     void load()
   }, [load])
 
   const parentName = (id: string | null) => rows.find((r) => r.id === id)?.name
+
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase().trim()
+    if (!q) return rows
+    return rows.filter((d) => {
+      const parent = parentName(d.parent_id)
+      return (
+        d.code.toLowerCase().includes(q) ||
+        d.name.toLowerCase().includes(q) ||
+        (parent ?? '').toLowerCase().includes(q)
+      )
+    })
+  }, [rows, query])
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -187,32 +173,6 @@ export function DepartmentsPage() {
             <Button variant="outline" size="sm" onClick={() => void load()}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
-            {canSync && (
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={busy || loading}
-                onClick={async () => {
-                  if (!appUser?.company_id) return
-                  setBusy(true)
-                  try {
-                    const { created, updated } = await syncStandardDepartments(appUser.company_id)
-                    toast.success('Standard departments applied', {
-                      description: `${created} added, ${updated} codes updated`,
-                    })
-                    await load()
-                  } catch (e) {
-                    toast.error('Sync failed', {
-                      description: e instanceof Error ? e.message : 'Unknown error',
-                    })
-                  } finally {
-                    setBusy(false)
-                  }
-                }}
-              >
-                Apply DEPT-001…009
-              </Button>
-            )}
             <HasPermission perm="department.create">
               <Button
                 size="sm"
@@ -231,12 +191,23 @@ export function DepartmentsPage() {
       />
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">All departments</CardTitle>
-          <CardDescription>
-            {rows.length} total · standard order DEPT-001 ({STANDARD_DEPARTMENTS[0]}) … DEPT-
-            {String(STANDARD_DEPARTMENTS.length).padStart(3, '0')} ({STANDARD_DEPARTMENTS.at(-1)})
-          </CardDescription>
+        <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
+          <div>
+            <CardTitle className="text-base">All departments</CardTitle>
+            <CardDescription>
+              {filtered.length} shown · DEP-001 ({STANDARD_DEPARTMENTS[0]}) … DEP-
+              {String(STANDARD_DEPARTMENTS.length).padStart(3, '0')} ({STANDARD_DEPARTMENTS.at(-1)})
+            </CardDescription>
+          </div>
+          <div className="relative w-72 max-w-full">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search code or name…"
+              className="pl-9"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           {loading ? (
@@ -262,9 +233,14 @@ export function DepartmentsPage() {
                 </Button>
               )}
             </div>
+          ) : filtered.length === 0 ? (
+            <div className="p-12 text-center text-sm text-muted-foreground">
+              <Briefcase className="h-8 w-8 mx-auto mb-3 opacity-50" />
+              No departments match your search.
+            </div>
           ) : (
             <div className="divide-y">
-              {rows.map((d) => (
+              {filtered.map((d) => (
                 <div key={d.id} className="flex items-center gap-4 px-6 py-3 hover:bg-muted/30">
                   <div className="flex-1">
                     <div className="font-medium">{d.name}</div>

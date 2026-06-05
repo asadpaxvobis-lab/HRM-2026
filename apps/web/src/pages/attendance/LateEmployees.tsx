@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
@@ -15,6 +14,7 @@ type DailyLate = {
   attendance_date: string
   status: string | null
   first_in: string | null
+  last_out: string | null
   late_minutes: number
 }
 
@@ -23,7 +23,9 @@ type EmployeeRow = {
   employee_code: string
   full_name: string
   departments: { name: string } | null
+  workingDays: number
   lateDays: number
+  latePercent: number
   totalLateMinutes: number
   days: DailyLate[]
 }
@@ -54,10 +56,37 @@ function eachDayInRange(start: string, end: string): string[] {
   return days
 }
 
-function isLateRecord(row: { status?: string | null; late_minutes?: number | null }) {
+/** Complete day = both IN and OUT recorded. */
+function hasCompleteDay(row: { first_in?: string | null; last_out?: string | null }) {
+  return Boolean(row.first_in && row.last_out)
+}
+
+function isLateRecord(row: {
+  status?: string | null
+  late_minutes?: number | null
+  first_in?: string | null
+  last_out?: string | null
+}) {
+  if (!hasCompleteDay(row)) return false
   const mins = Number(row.late_minutes ?? 0)
   const status = (row.status ?? '').trim()
   return mins > 0 || status === 'Late' || status.toLowerCase().includes('late')
+}
+
+function fmtLateHours(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes))
+  if (m === 0) return '0h'
+  const h = Math.floor(m / 60)
+  const rem = m % 60
+  if (h === 0) return `${rem}m`
+  if (rem === 0) return `${h}h`
+  return `${h}h ${rem}m`
+}
+
+function fmtLateBoth(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes))
+  const hours = (m / 60).toFixed(1)
+  return `${m} min · ${hours}h`
 }
 
 const fmtTime = (iso: string | null) =>
@@ -87,7 +116,7 @@ export function LateEmployeesPage() {
         .order('full_name'),
       supabase
         .from('attendance_daily')
-        .select('employee_id, attendance_date, status, first_in, late_minutes')
+        .select('employee_id, attendance_date, status, first_in, last_out, late_minutes')
         .gte('attendance_date', range.start)
         .lte('attendance_date', range.end)
         .order('attendance_date', { ascending: false }),
@@ -102,38 +131,47 @@ export function LateEmployeesPage() {
         employee_code: r.employee_code as string,
         full_name: r.full_name as string,
         departments: Array.isArray(dep) ? (dep[0] as { name: string }) : (dep as { name: string } | null),
+        workingDays: 0,
         lateDays: 0,
+        latePercent: 0,
         totalLateMinutes: 0,
         days: [],
       })
     }
 
     for (const d of daily ?? []) {
-      if (!isLateRecord(d)) continue
       const id = d.employee_id as string
       const emp = empMap.get(id)
       if (!emp) continue
-      const mins = Math.max(Number(d.late_minutes ?? 0), 1)
+      if (hasCompleteDay(d)) emp.workingDays += 1
+      if (!isLateRecord(d)) continue
+      const mins = Math.max(0, Math.round(Number(d.late_minutes ?? 0)))
       emp.days.push({
         attendance_date: d.attendance_date as string,
         status: d.status as string | null,
         first_in: d.first_in as string | null,
+        last_out: d.last_out as string | null,
         late_minutes: mins,
       })
       emp.lateDays += 1
-      emp.totalLateMinutes += Number(d.late_minutes ?? 0) || mins
+      emp.totalLateMinutes += mins
+    }
+
+    for (const emp of empMap.values()) {
+      emp.latePercent =
+        emp.workingDays > 0 ? Math.round((emp.lateDays / emp.workingDays) * 1000) / 10 : 0
     }
 
     const merged = [...empMap.values()]
       .filter((e) => e.lateDays > 0)
-      .sort((a, b) => b.totalLateMinutes - a.totalLateMinutes)
+      .sort((a, b) => b.latePercent - a.latePercent || b.totalLateMinutes - a.totalLateMinutes)
 
     const dayAgg = new Map<string, { minutes: number; employees: Set<string> }>()
     for (const d of daily ?? []) {
       if (!isLateRecord(d)) continue
       const date = d.attendance_date as string
       const cur = dayAgg.get(date) ?? { minutes: 0, employees: new Set<string>() }
-      cur.minutes += Number(d.late_minutes ?? 0) || 1
+      cur.minutes += Math.max(0, Math.round(Number(d.late_minutes ?? 0)))
       cur.employees.add(d.employee_id as string)
       dayAgg.set(date, cur)
     }
@@ -173,11 +211,15 @@ export function LateEmployeesPage() {
     let employees = filtered.length
     let days = 0
     let minutes = 0
+    let workingDays = 0
     for (const r of filtered) {
       days += r.lateDays
       minutes += r.totalLateMinutes
+      workingDays += r.workingDays
     }
-    return { employees, days, minutes }
+    const avgPercent =
+      workingDays > 0 ? Math.round((days / workingDays) * 1000) / 10 : 0
+    return { employees, days, minutes, workingDays, avgPercent }
   }, [filtered])
 
   const maxDayMinutes = useMemo(() => Math.max(1, ...chartByDay.map((p) => p.minutes)), [chartByDay])
@@ -195,7 +237,7 @@ export function LateEmployeesPage() {
     <div className="space-y-4">
       <PageHeader
         title="Late employees"
-        description="Employees who arrived late — from daily attendance (after grace period)."
+        description="Employees with both IN and OUT who arrived late (after shift grace). Monthly % is late days ÷ complete working days."
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" asChild>
@@ -228,34 +270,47 @@ export function LateEmployeesPage() {
         <div className="text-sm text-muted-foreground flex items-center gap-2 ml-auto">
           <AlarmClock className="h-4 w-4" />
           <span>
-            {totals.employees} employee(s) · {totals.days} late day(s) · {totals.minutes} min total
+            {totals.employees} employee(s) · {totals.days} late day(s) · {fmtLateBoth(totals.minutes)}
+            {period === 'month' && totals.workingDays > 0 && ` · ${totals.avgPercent}% avg late`}
           </span>
         </div>
       </div>
 
       <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">
+            {period === 'month' ? `Monthly late % — ${monthLabel}` : 'Late today'}
+          </CardTitle>
+          <CardDescription>
+            Only employees with both IN and OUT on a day count as late. % = late days ÷ complete working days.
+          </CardDescription>
+        </CardHeader>
         <CardContent className="p-0">
           {loading ? (
             <div className="py-16 grid place-items-center">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
           ) : filtered.length === 0 ? (
-            <div className="py-16 text-center text-sm text-muted-foreground">No late arrivals in this period.</div>
+            <div className="py-16 text-center text-sm text-muted-foreground">
+              No late arrivals with complete IN/OUT in this period.
+            </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto border-t">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
                   <tr className="text-left">
                     <th className="px-4 py-3">Employee</th>
                     <th className="px-3 py-3">Department</th>
+                    <th className="px-3 py-3 text-right">Working days</th>
                     <th className="px-3 py-3 text-right">Late days</th>
-                    <th className="px-3 py-3 text-right">Total late (min)</th>
-                    <th className="px-3 py-3">Details</th>
+                    <th className="px-3 py-3 text-right">% Late</th>
+                    <th className="px-3 py-3 text-right">Late (minutes)</th>
+                    <th className="px-3 py-3 text-right">Late (hours)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {filtered.map((e) => (
-                    <tr key={e.id} className="hover:bg-muted/20 align-top">
+                    <tr key={e.id} className="hover:bg-muted/20">
                       <td className="px-4 py-3">
                         <Link to={`/employees/${e.id}`} className="font-medium text-primary hover:underline">
                           {e.full_name}
@@ -263,25 +318,16 @@ export function LateEmployeesPage() {
                         <div className="text-xs text-muted-foreground font-mono">{e.employee_code}</div>
                       </td>
                       <td className="px-3 py-3 text-muted-foreground">{e.departments?.name ?? '—'}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">{e.workingDays}</td>
                       <td className="px-3 py-3 text-right tabular-nums font-medium">{e.lateDays}</td>
-                      <td className="px-3 py-3 text-right tabular-nums font-medium text-amber-700 dark:text-amber-400">
-                        {e.totalLateMinutes}
+                      <td className="px-3 py-3 text-right tabular-nums font-semibold text-amber-700 dark:text-amber-400">
+                        {e.latePercent}%
                       </td>
-                      <td className="px-3 py-3">
-                        <ul className="space-y-1 text-xs">
-                          {e.days.slice(0, period === 'today' ? 5 : 8).map((d) => (
-                            <li key={d.attendance_date} className="flex flex-wrap items-center gap-2">
-                              <span className="text-muted-foreground">{d.attendance_date}</span>
-                              <Badge variant="outline" className="text-amber-700 border-amber-300">
-                                {d.late_minutes} min late
-                              </Badge>
-                              <span className="text-muted-foreground">In {fmtTime(d.first_in)}</span>
-                            </li>
-                          ))}
-                          {e.days.length > 8 && period === 'month' && (
-                            <li className="text-muted-foreground">+{e.days.length - 8} more day(s)</li>
-                          )}
-                        </ul>
+                      <td className="px-3 py-3 text-right tabular-nums font-medium">
+                        {e.totalLateMinutes} min
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums font-medium">
+                        {fmtLateHours(e.totalLateMinutes)}
                       </td>
                     </tr>
                   ))}
@@ -292,6 +338,54 @@ export function LateEmployeesPage() {
         </CardContent>
       </Card>
 
+      {!loading && filtered.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">
+              {period === 'month' ? `Daily late detail — ${monthLabel}` : 'Late today — detail'}
+            </CardTitle>
+            <CardDescription>Each late day with IN/OUT times. Minutes and hours shown.</CardDescription>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto border-t">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                  <tr className="text-left">
+                    <th className="px-4 py-3">Employee</th>
+                    <th className="px-3 py-3">Date</th>
+                    <th className="px-3 py-3">IN</th>
+                    <th className="px-3 py-3">OUT</th>
+                    <th className="px-3 py-3 text-right">Late (minutes)</th>
+                    <th className="px-3 py-3 text-right">Late (hours)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {filtered.flatMap((e) =>
+                    e.days.map((d) => (
+                      <tr key={`${e.id}-${d.attendance_date}`} className="hover:bg-muted/20">
+                        <td className="px-4 py-3">
+                          <div className="font-medium">{e.full_name}</div>
+                          <div className="text-xs text-muted-foreground font-mono">{e.employee_code}</div>
+                        </td>
+                        <td className="px-3 py-3 font-mono text-xs">{d.attendance_date}</td>
+                        <td className="px-3 py-3 tabular-nums">{fmtTime(d.first_in)}</td>
+                        <td className="px-3 py-3 tabular-nums">{fmtTime(d.last_out)}</td>
+                        <td className="px-3 py-3 text-right tabular-nums font-medium text-amber-700 dark:text-amber-400">
+                          {d.late_minutes} min
+                        </td>
+                        <td className="px-3 py-3 text-right tabular-nums">
+                          {fmtLateHours(d.late_minutes)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {!loading && (
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
@@ -299,7 +393,7 @@ export function LateEmployeesPage() {
               <CardTitle className="text-base">
                 {period === 'month' ? `Monthly late — ${monthLabel}` : 'Late today'}
               </CardTitle>
-              <CardDescription>Total late minutes per day (bar height).</CardDescription>
+              <CardDescription>Total late minutes per day (IN + OUT complete days only).</CardDescription>
             </CardHeader>
             <CardContent>
               {chartByDay.every((p) => p.minutes === 0) ? (
@@ -313,11 +407,13 @@ export function LateEmployeesPage() {
                         <div
                           key={p.date}
                           className="flex flex-col items-center justify-end gap-1 flex-1 min-w-[22px] max-w-[36px] h-full group"
-                          title={`${p.date}: ${p.minutes} min late · ${p.employees} employee(s)`}
+                          title={`${p.date}: ${fmtLateBoth(p.minutes)} late · ${p.employees} employee(s)`}
                         >
                           {p.minutes > 0 && (
-                            <span className="text-[9px] font-medium text-amber-700 dark:text-amber-400 tabular-nums opacity-0 group-hover:opacity-100">
-                              {p.minutes}
+                            <span className="text-[9px] font-medium text-amber-700 dark:text-amber-400 tabular-nums opacity-0 group-hover:opacity-100 text-center leading-tight">
+                              {p.minutes}m
+                              <br />
+                              {fmtLateHours(p.minutes)}
                             </span>
                           )}
                           <div
@@ -334,7 +430,7 @@ export function LateEmployeesPage() {
                   </div>
                   <div className="flex justify-between text-[10px] text-muted-foreground mt-2 px-1">
                     <span>Day of month</span>
-                    <span>Max {maxDayMinutes} min</span>
+                    <span>Max {fmtLateBoth(maxDayMinutes)}</span>
                   </div>
                 </div>
               )}
@@ -344,7 +440,7 @@ export function LateEmployeesPage() {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Late by employee</CardTitle>
-              <CardDescription>Total late minutes in selected period (filtered list).</CardDescription>
+              <CardDescription>% late and total minutes/hours in selected period.</CardDescription>
             </CardHeader>
             <CardContent>
               {filtered.length === 0 ? (
@@ -352,23 +448,23 @@ export function LateEmployeesPage() {
               ) : (
                 <ul className="space-y-3">
                   {filtered.slice(0, 12).map((e) => {
-                    const pct = (e.totalLateMinutes / maxEmpMinutes) * 100
+                    const barPct = (e.totalLateMinutes / maxEmpMinutes) * 100
                     return (
                       <li key={e.id}>
                         <div className="flex justify-between text-xs mb-1 gap-2">
                           <span className="font-medium truncate">{e.full_name}</span>
-                          <span className="text-amber-700 dark:text-amber-400 tabular-nums shrink-0">
-                            {e.totalLateMinutes} min
+                          <span className="text-amber-700 dark:text-amber-400 tabular-nums shrink-0 text-right">
+                            {e.latePercent}% · {fmtLateBoth(e.totalLateMinutes)}
                           </span>
                         </div>
                         <div className="h-2.5 rounded-full bg-muted overflow-hidden">
                           <div
                             className="h-full rounded-full bg-amber-500"
-                            style={{ width: `${Math.max(pct, e.totalLateMinutes > 0 ? 4 : 0)}%` }}
+                            style={{ width: `${Math.max(barPct, e.totalLateMinutes > 0 ? 4 : 0)}%` }}
                           />
                         </div>
                         <div className="text-[10px] text-muted-foreground mt-0.5">
-                          {e.lateDays} late day(s) · {e.employee_code}
+                          {e.lateDays}/{e.workingDays} late days · {e.employee_code}
                         </div>
                       </li>
                     )

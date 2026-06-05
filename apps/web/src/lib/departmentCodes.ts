@@ -1,8 +1,8 @@
 import { supabase } from '@/lib/supabase'
 
-export const DEPARTMENT_CODE_PREFIX = 'DEPT-'
+export const DEPARTMENT_CODE_PREFIX = 'DEP-'
 
-/** Standard department list — codes DEPT-001 … DEPT-009 in this order. */
+/** Standard department list — codes DEP-001 … DEP-009 in this order. */
 export const STANDARD_DEPARTMENTS = [
   'Accounts Dept',
   'ADMIN',
@@ -68,7 +68,7 @@ export function hasDepartmentCodeIssues(rows: { code: string; name?: string }[])
   if (
     rows.some((r) => {
       const code = r.code.trim()
-      return /^DEP-/i.test(code) || !suffixRe.test(code)
+      return /^DEPT-/i.test(code) || !suffixRe.test(code)
     })
   ) {
     return true
@@ -116,7 +116,7 @@ function findMatch(
 }
 
 /**
- * Ensure standard 9 departments exist with codes DEPT-001 … DEPT-009; renumber any others after.
+ * Ensure standard 9 departments exist with codes DEP-001 … DEP-009; renumber any others after.
  */
 export async function syncStandardDepartments(
   companyId: string
@@ -143,6 +143,15 @@ export async function syncStandardDepartments(
   const updates: { name: string; from: string; to: string }[] = []
   let created = 0
   let updated = 0
+
+  // Temp codes first to avoid unique constraint when swapping DEP/DEPT suffixes
+  for (const d of pool) {
+    const temp = `TMP-${d.id.slice(0, 8)}`
+    if (d.code === temp) continue
+    const { error: tmpErr } = await supabase.from('departments').update({ code: temp }).eq('id', d.id)
+    if (tmpErr) throw new Error(`${d.name}: ${tmpErr.message}`)
+    d.code = temp
+  }
 
   for (let i = 0; i < STANDARD_DEPARTMENTS.length; i++) {
     const name = STANDARD_DEPARTMENTS[i]

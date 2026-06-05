@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useNavigate } from 'react-router-dom'
 import { avatarColorFor, initialsFromName } from '@/lib/utils'
+import { GlobalSearch } from './GlobalSearch'
 
 export function TopBar() {
   const { appUser, roles, signOut } = useAuth()
@@ -35,7 +36,9 @@ export function TopBar() {
         )}
       </div>
 
-      <div className="flex items-center gap-2">
+      <GlobalSearch />
+
+      <div className="flex items-center gap-2 shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" aria-label="Theme">

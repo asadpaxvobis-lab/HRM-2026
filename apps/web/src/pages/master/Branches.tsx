@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, Building2 } from 'lucide-react'
+import { Plus, Pencil, RefreshCw, Loader2, Building2, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { sortByMasterCode } from '@/lib/utils'
 import { toast } from 'sonner'
 
 type Branch = {
@@ -55,6 +56,7 @@ export function BranchesPage() {
   const { appUser, hasPermission } = useAuth()
   const canCreate = hasPermission('branch.create')
   const canUpdate = hasPermission('branch.update')
+  const canDelete = hasPermission('branch.delete')
   const [rows, setRows] = useState<Branch[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
@@ -67,9 +69,8 @@ export function BranchesPage() {
     const { data, error } = await supabase
       .from('branches')
       .select('id, code, name, city, province, phone, weekly_off_days, default_shift_start, default_shift_end, is_active')
-      .order('name')
     if (error) toast.error('Failed to load branches', { description: error.message })
-    else setRows((data ?? []) as Branch[])
+    else setRows(sortByMasterCode((data ?? []) as Branch[]))
     setLoading(false)
   }
 
@@ -170,6 +171,38 @@ export function BranchesPage() {
     void load()
   }
 
+  const onDelete = async (b: Branch) => {
+    // Block delete when employees still assigned to this branch
+    const { count, error: countErr } = await supabase
+      .from('employees')
+      .select('id', { count: 'exact', head: true })
+      .eq('branch_id', b.id)
+    if (countErr) {
+      toast.error('Could not verify employees', { description: countErr.message })
+      return
+    }
+    if (count && count > 0) {
+      toast.error('Cannot delete branch', {
+        description: `${count} employee(s) are still assigned to "${b.name}". Reassign them first.`,
+      })
+      return
+    }
+
+    if (!window.confirm(`Delete branch "${b.name}" (${b.code})? This cannot be undone.`)) return
+
+    setBusy(true)
+    const { error } = await supabase.from('branches').delete().eq('id', b.id)
+    setBusy(false)
+    if (error) {
+      toast.error('Delete failed', { description: error.message })
+      return
+    }
+    await writeAuditLog({ action: 'DELETE', entityType: 'branch', entityId: b.id })
+    toast.success('Branch deleted')
+    if (editing?.id === b.id) setOpen(false)
+    void load()
+  }
+
   const offLabel = (days: number[]) =>
     days.map((d) => WEEK_DAYS.find((w) => w.value === d)?.label?.slice(0, 3) ?? d).join(', ')
 
@@ -217,23 +250,41 @@ export function BranchesPage() {
               {rows.map((b) => (
                 <div key={b.id} className="flex flex-wrap items-center gap-4 px-6 py-4 hover:bg-muted/30">
                   <div className="flex-1 min-w-[200px]">
-                    <div className="font-medium">{b.name}</div>
+                    <div className="font-medium">
+                      <span className="font-mono text-muted-foreground">{b.code}</span>
+                      <span className="mx-2 text-muted-foreground/50">·</span>
+                      {b.name}
+                    </div>
                     <div className="text-sm text-muted-foreground">
-                      {b.code}
-                      {b.city && ` · ${b.city}`}
-                      {b.province && `, ${b.province}`}
+                      {[b.city, b.province].filter(Boolean).join(', ') || 'No location set'}
                     </div>
                   </div>
                   <div className="text-sm text-muted-foreground">Off: {offLabel(b.weekly_off_days)}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {b.default_shift_start?.slice(0, 5)} – {b.default_shift_end?.slice(0, 5)}
-                  </div>
-                  {!b.is_active && <Badge variant="secondary">Inactive</Badge>}
-                  {canUpdate && (
-                    <Button variant="ghost" size="sm" onClick={() => openEdit(b)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
+                  {b.default_shift_start && b.default_shift_end && (
+                    <div className="text-sm text-muted-foreground">
+                      {b.default_shift_start.slice(0, 5)} – {b.default_shift_end.slice(0, 5)}
+                    </div>
                   )}
+                  {!b.is_active && <Badge variant="secondary">Inactive</Badge>}
+                  <div className="flex items-center gap-1">
+                    {canUpdate && (
+                      <Button variant="ghost" size="sm" title="Edit branch" onClick={() => openEdit(b)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Delete branch"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        disabled={busy}
+                        onClick={() => void onDelete(b)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -249,16 +300,16 @@ export function BranchesPage() {
           </DialogHeader>
           <form onSubmit={onSubmit} className="space-y-4">
             <div className="grid sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Code</Label>
-                <Input value={form.code} readOnly disabled className="font-mono" />
-                <p className="text-xs text-muted-foreground">
-                  {editing ? 'Codes are immutable.' : 'Auto-generated.'}
-                </p>
-              </div>
-              <div className="space-y-2">
+              <div className="space-y-2 sm:col-span-2">
                 <Label>Name</Label>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Code</Label>
+                <Input value={form.code} readOnly disabled className="font-mono max-w-[12rem]" />
+                <p className="text-xs text-muted-foreground">
+                  {editing ? 'Codes are immutable.' : 'Auto-generated BR-001, BR-002, …'}
+                </p>
               </div>
               <div className="space-y-2">
                 <Label>City</Label>

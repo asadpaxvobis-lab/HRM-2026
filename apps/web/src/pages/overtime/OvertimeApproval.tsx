@@ -48,7 +48,7 @@ type OT = {
   source: string | null
   status: string
   approver_id: string | null
-  employees?: { full_name: string; employee_code: string }
+  employees?: { full_name: string; employee_code: string; overtime_eligible?: boolean }
   approver?: { full_name: string | null; email: string } | null
 }
 
@@ -86,7 +86,7 @@ export function OvertimeApprovalPage() {
     let q = supabase
       .from('overtime_requests')
       .select(
-        'id, ot_no, employee_id, ot_date, start_time, end_time, planned_hours, ot_type, rate_multiplier, hourly_rate, amount, reason, source, status, approver_id, employees(full_name, employee_code), approver:users!overtime_requests_approver_id_fkey(full_name, email)'
+        'id, ot_no, employee_id, ot_date, start_time, end_time, planned_hours, ot_type, rate_multiplier, hourly_rate, amount, reason, source, status, approver_id, employees(full_name, employee_code, overtime_eligible), approver:users!overtime_requests_approver_id_fkey(full_name, email)'
       )
       .eq('status', 'PENDING')
       .order('ot_date', { ascending: false })
@@ -103,11 +103,16 @@ export function OvertimeApprovalPage() {
       toast.error('Failed to load overtime', { description: error.message })
       setPayById({})
     } else {
-      const mapped = (data ?? []).map((r: Record<string, unknown>) => ({
-        ...(r as object),
-        employees: Array.isArray(r.employees) ? (r.employees as unknown[])[0] : r.employees,
-        approver: Array.isArray(r.approver) ? (r.approver as unknown[])[0] : r.approver,
-      })) as OT[]
+      const mapped = (data ?? [])
+        .map((r: Record<string, unknown>) => ({
+          ...(r as object),
+          employees: Array.isArray(r.employees) ? (r.employees as unknown[])[0] : r.employees,
+          approver: Array.isArray(r.approver) ? (r.approver as unknown[])[0] : r.approver,
+        }))
+        .filter((r) => {
+          const emp = r.employees as { overtime_eligible?: boolean } | null | undefined
+          return emp?.overtime_eligible !== false
+        }) as OT[]
       setRows(mapped)
       const next: Record<string, string> = {}
       for (const row of mapped) {
