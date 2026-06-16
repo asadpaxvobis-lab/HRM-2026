@@ -46,7 +46,12 @@ async function main() {
   })
   await supabase.from('app_settings').upsert({ company_id: COMPANY })
 
-  const perms = parsePermissions(sql2)
+  const perms = [
+    ...parsePermissions(sql2),
+    // Added in later migrations (not in 0002) — required for Admin → Devices
+    { module: 'attendance', action: 'device', description: 'Manage attendance devices', is_system: true },
+    { module: 'payroll', action: 'config', description: 'Configure payroll components, tax slabs, statutory rates', is_system: true },
+  ]
   console.log(`Inserting ${perms.length} permissions...`)
   for (let i = 0; i < perms.length; i += 50) {
     const chunk = perms.slice(i, i + 50)

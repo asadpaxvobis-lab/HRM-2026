@@ -140,6 +140,15 @@ type DevicePinRow = {
 
 const DEVICE_TYPES = ['ZKTeco', 'Face Kiosk', 'Mobile', 'Manual'] as const
 
+const DEVICE_TYPE_HINTS: Record<(typeof DEVICE_TYPES)[number], string> = {
+  ZKTeco: 'Biometric terminal (K40, MB460 Plus, etc.) — use IP for LAN agent or Push URL for ADMS.',
+  'Face Kiosk': 'Face kiosk (coming soon).',
+  Mobile: 'Mobile attendance app (coming soon).',
+  Manual: 'No hardware — attendance entered manually in the Attendance screen.',
+}
+
+const isZkt = (type: string) => type === 'ZKTeco'
+
 /** PINs on the device that are not linked to any HRM employee (from last agent sync notes). */
 function parseUnmappedPinsFromNotes(notes: string | null): number[] {
   if (!notes) return []
@@ -541,6 +550,8 @@ export function DevicesPage() {
     setOpen(true)
   }
 
+  const isZktForm = isZkt(form.device_type)
+
   const openEdit = (d: Device) => {
     setEditing(d)
     setForm({
@@ -632,7 +643,7 @@ export function DevicesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Attendance devices"
-        description="Register ZKTeco machines, face kiosks, mobile apps, and manual sources. Configure the push URL on the device to send punches automatically."
+        description="Register ZKTeco machines manually (Add device), configure ADMS push URL, or use the LAN agent on the office PC."
         actions={
           <>
             <Button variant="outline" size="sm" onClick={() => void load()}>
@@ -643,6 +654,11 @@ export function DevicesPage() {
                 <Plus className="h-4 w-4" /> Add device
               </Button>
             </HasPermission>
+            {!canManage && (
+              <span className="text-xs text-muted-foreground self-center">
+                Need <code className="text-foreground">attendance.device</code> permission to register devices.
+              </span>
+            )}
           </>
         }
       />
@@ -1309,29 +1325,49 @@ export function DevicesPage() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editing ? 'Edit device' : 'Register device'}</DialogTitle>
+            <DialogTitle>{editing ? 'Edit device' : 'Register device manually'}</DialogTitle>
             <DialogDescription>
-              The push token authenticates the device. Set the ZKTeco server URL to the push endpoint below.
+              {isZktForm
+                ? 'Enter device details from the machine label or ZKTime. Use IP for office LAN sync, or copy the Push URL for ADMS cloud push.'
+                : 'Register a non-ZKT source. Manual type is for hand-entered attendance only — no sync from hardware.'}
             </DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={onSubmit}>
             <div className="grid sm:grid-cols-2 gap-4">
               <div className="space-y-2 sm:col-span-2">
-                <Label>Name</Label>
-                <Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="HQ Reception ZK" />
+                <Label>Device name *</Label>
+                <Input
+                  required
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="e.g. ZKT MB460 Plus — Main gate"
+                />
               </div>
               <div className="space-y-2">
-                <Label>Type</Label>
-                <Select value={form.device_type} onChange={(e) => setForm({ ...form, device_type: e.target.value })}>
+                <Label>Device type *</Label>
+                <Select
+                  value={form.device_type}
+                  onChange={(e) => {
+                    const device_type = e.target.value
+                    setForm({
+                      ...form,
+                      device_type,
+                      push_token: isZkt(device_type) ? form.push_token || genToken() : '',
+                    })
+                  }}
+                >
                   {DEVICE_TYPES.map((t) => (
                     <option key={t} value={t}>{t}</option>
                   ))}
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  {DEVICE_TYPE_HINTS[form.device_type as (typeof DEVICE_TYPES)[number]] ?? ''}
+                </p>
               </div>
               <div className="space-y-2">
-                <Label>Branch (optional)</Label>
+                <Label>Branch</Label>
                 <Select value={form.branch_id} onChange={(e) => setForm({ ...form, branch_id: e.target.value })}>
                   <option value="">All branches</option>
                   {branches.map((b) => (
@@ -1339,56 +1375,75 @@ export function DevicesPage() {
                   ))}
                 </Select>
               </div>
-              <div className="space-y-2">
-                <Label>Serial number</Label>
-                <Input value={form.serial_no} onChange={(e) => setForm({ ...form, serial_no: e.target.value })} />
-              </div>
-              <div className="space-y-2">
-                <Label>IP address</Label>
-                <Input value={form.ip_address} onChange={(e) => setForm({ ...form, ip_address: e.target.value })} placeholder="192.168.1.100" />
-              </div>
-              <div className="space-y-2 sm:col-span-2">
-                <Label>Push token</Label>
-                <div className="flex gap-2">
-                  <Input
-                    value={form.push_token}
-                    onChange={(e) => setForm({ ...form, push_token: e.target.value })}
-                    className="font-mono text-xs"
-                  />
-                  <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, push_token: genToken() })}>
-                    Regenerate
-                  </Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => void copyToken(form.push_token)} disabled={!form.push_token}>
-                    Copy
-                  </Button>
-                </div>
-              </div>
-              {form.push_token && form.device_type === 'ZKTeco' && (
-                <div className="space-y-2 sm:col-span-2">
-                  <Label>Push URL (ZKTeco server address)</Label>
+              {isZktForm && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Serial number</Label>
+                    <Input
+                      value={form.serial_no}
+                      onChange={(e) => setForm({ ...form, serial_no: e.target.value })}
+                      placeholder="e.g. TTq5253800196"
+                    />
+                    <p className="text-xs text-muted-foreground">From device menu → System → Device info</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>IP address (LAN sync)</Label>
+                    <Input
+                      value={form.ip_address}
+                      onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
+                      placeholder="192.168.18.50"
+                    />
+                    <p className="text-xs text-muted-foreground">Fixed LAN IP, port 4370 — for office PC agent pull</p>
+                  </div>
+                </>
+              )}
+              {isZktForm && (
+                <div className="space-y-2 sm:col-span-2 rounded-lg border bg-muted/30 p-3">
+                  <p className="text-xs font-medium text-foreground">ADMS / cloud push (optional)</p>
+                  <Label className="text-xs">Push token</Label>
                   <div className="flex gap-2">
                     <Input
-                      readOnly
-                      value={pushEndpointUrl(form.push_token, form.serial_no)}
-                      className="font-mono text-[11px]"
+                      value={form.push_token}
+                      onChange={(e) => setForm({ ...form, push_token: e.target.value })}
+                      className="font-mono text-xs"
                     />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void copyToken(pushEndpointUrl(form.push_token, form.serial_no))}
-                    >
+                    <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, push_token: genToken() })}>
+                      Regenerate
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => void copyToken(form.push_token)} disabled={!form.push_token}>
                       Copy
                     </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    On the device: Communication → Cloud Server → set this URL. Employees need a matching Device PIN.
-                  </p>
+                  {form.push_token && (
+                    <>
+                      <Label className="text-xs">Push URL — paste on device</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          readOnly
+                          value={pushEndpointUrl(form.push_token, form.serial_no)}
+                          className="font-mono text-[11px]"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void copyToken(pushEndpointUrl(form.push_token, form.serial_no))}
+                        >
+                          Copy URL
+                        </Button>
+                      </div>
+                      <ol className="text-xs text-muted-foreground list-decimal list-inside space-y-1 mt-2">
+                        <li>On device: Menu → Comm → Cloud Server / ADMS</li>
+                        <li>Enable cloud server and paste the Push URL above</li>
+                        <li>Save — Last seen in HRM should update after a test punch</li>
+                      </ol>
+                    </>
+                  )}
                 </div>
               )}
               <div className="space-y-2 sm:col-span-2">
                 <Label>Notes</Label>
-                <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+                <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Location, model, etc." />
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm">
