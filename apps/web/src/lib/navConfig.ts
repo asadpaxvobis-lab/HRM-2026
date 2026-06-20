@@ -2,11 +2,15 @@ export type NavItem = {
   label: string
   to: string
   perm?: string
+  /** Always visible when the section uses partial collapse */
+  pinned?: boolean
 }
 
 export type NavSection = {
   heading?: string
   items: NavItem[]
+  /** Collapse some or all items until the section heading is clicked */
+  collapsible?: boolean
 }
 
 export const navSections: NavSection[] = [
@@ -18,6 +22,7 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Masters',
+    collapsible: true,
     items: [
       { label: 'Employees', to: '/employees', perm: 'employee.view' },
       { label: 'Departments', to: '/departments', perm: 'department.view' },
@@ -29,11 +34,13 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Time & Attendance',
+    collapsible: true,
     items: [
+      { label: 'Live attendance', to: '/attendance/live', perm: 'attendance.view', pinned: true },
+      { label: 'Late employees', to: '/attendance/late', perm: 'attendance.view', pinned: true },
       { label: 'Bulk Shift Assign', to: '/roster', perm: 'shift.view' },
-      { label: 'Live attendance', to: '/attendance/live', perm: 'attendance.view' },
-      { label: 'Late employees', to: '/attendance/late', perm: 'attendance.view' },
       { label: 'Attendance', to: '/attendance', perm: 'attendance.view' },
+      { label: 'Attendance punches', to: '/attendance/punches', perm: 'attendance.view' },
       { label: 'Corrections', to: '/attendance/corrections', perm: 'attendance.view' },
       { label: 'Overtime taken', to: '/overtime/taken', perm: 'overtime.view' },
       { label: 'Overtime Approval', to: '/overtime/approval', perm: 'overtime.view' },
@@ -44,6 +51,7 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Leave',
+    collapsible: true,
     items: [
       { label: 'Leave requests', to: '/leave', perm: 'leave.view' },
       { label: 'Leave balances', to: '/leave/balances', perm: 'leave.view' },
@@ -52,6 +60,7 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Payroll',
+    collapsible: true,
     items: [
       { label: 'Payroll runs', to: '/payroll', perm: 'payroll.view' },
       { label: 'Components', to: '/payroll/components', perm: 'payroll.config' },
@@ -60,6 +69,7 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Claims & Loans',
+    collapsible: true,
     items: [
       { label: 'Expense claims', to: '/expenses', perm: 'expense.view' },
       { label: 'Expense categories', to: '/expenses/categories', perm: 'expense.config' },
@@ -69,6 +79,7 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Recruitment',
+    collapsible: true,
     items: [
       { label: 'Recruitment hub', to: '/recruitment', perm: 'recruitment.view' },
       { label: 'Job postings', to: '/recruitment/jobs', perm: 'recruitment.view' },
@@ -77,6 +88,7 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Communication',
+    collapsible: true,
     items: [
       { label: 'Announcements', to: '/announcements', perm: 'announcement.view' },
       { label: 'Letters', to: '/letters', perm: 'letter.view' },
@@ -90,6 +102,7 @@ export const navSections: NavSection[] = [
   },
   {
     heading: 'Administration',
+    collapsible: true,
     items: [
       { label: 'Users', to: '/admin/users', perm: 'user.view' },
       { label: 'Roles & Permissions', to: '/admin/roles', perm: 'role.view' },

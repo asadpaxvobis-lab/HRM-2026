@@ -282,7 +282,9 @@ export function EmployeeDetailPage() {
                 <table className="w-full">
                   <thead className="bg-muted/30 text-xs uppercase text-muted-foreground">
                     <tr className="text-left">
-                      <th className="px-4 py-2">Time</th>
+                      <th className="px-4 py-2 w-10">#</th>
+                      <th className="px-3 py-2">Employee</th>
+                      <th className="px-3 py-2">Time</th>
                       <th className="px-3 py-2">Type</th>
                       <th className="px-3 py-2">Device</th>
                     </tr>
@@ -290,6 +292,8 @@ export function EmployeeDetailPage() {
                   <tbody className="divide-y">
                     {recentPunches.map((p, i) => (
                       <tr key={`${p.punch_at}-${i}`}>
+                        <td className="px-4 py-2 tabular-nums text-muted-foreground">{i + 1}</td>
+                        <td className="px-3 py-2 font-medium">{String(employee.full_name ?? '—')}</td>
                         <td className="px-4 py-2 tabular-nums">
                           {new Date(p.punch_at).toLocaleString('en-PK', {
                             dateStyle: 'short',

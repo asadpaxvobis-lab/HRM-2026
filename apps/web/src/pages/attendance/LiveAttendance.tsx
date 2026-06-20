@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { PageHeader } from '@/components/master/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { avatarColorFor, cn, initialsFromName } from '@/lib/utils'
 import {
   classifyLiveAttendance,
@@ -16,11 +16,13 @@ import {
   type LiveAttendanceBucket,
   type LiveAttendanceDaily,
 } from '@/lib/liveAttendance'
+import { nextDateIso, punchOnDate, resolveInOutFromPunches, todayInCompanyTz } from '@/lib/attendance'
 
 type Employee = {
   id: string
   employee_code: string
   full_name: string
+  photo_url: string | null
   branches: { name: string } | null
 }
 
@@ -41,7 +43,7 @@ const fmtTime = (iso: string | null | undefined) =>
     : null
 
 export function LiveAttendancePage() {
-  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), [])
+  const todayIso = useMemo(() => todayInCompanyTz(), [])
   const [employees, setEmployees] = useState<Employee[]>([])
   const [dailyByEmployee, setDailyByEmployee] = useState<Map<string, LiveAttendanceDaily>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -51,16 +53,21 @@ export function LiveAttendancePage() {
 
   async function load() {
     setLoading(true)
-    const [{ data: emps }, { data: daily }] = await Promise.all([
+    const [{ data: emps }, { data: daily }, { data: punches }] = await Promise.all([
       supabase
         .from('employees')
-        .select('id, employee_code, full_name, branches(name)')
+        .select('id, employee_code, full_name, photo_url, branches(name)')
         .eq('is_active', true)
         .order('full_name'),
       supabase
         .from('attendance_daily')
         .select('employee_id, status, first_in, last_out, is_holiday, is_weekly_off')
         .eq('attendance_date', todayIso),
+      supabase
+        .from('attendance_punches')
+        .select('employee_id, punch_at, punch_type')
+        .gte('punch_at', `${todayIso}T00:00:00+05:00`)
+        .lt('punch_at', `${nextDateIso(todayIso)}T00:00:00+05:00`),
     ])
 
     setEmployees(
@@ -70,6 +77,7 @@ export function LiveAttendancePage() {
           id: r.id as string,
           employee_code: r.employee_code as string,
           full_name: r.full_name as string,
+          photo_url: (r.photo_url as string | null) ?? null,
           branches: Array.isArray(b) ? (b[0] as { name: string }) : (b as { name: string } | null),
         }
       })
@@ -79,6 +87,25 @@ export function LiveAttendancePage() {
     for (const row of daily ?? []) {
       map.set(row.employee_id as string, row as LiveAttendanceDaily)
     }
+
+    const punchesByEmp = new Map<string, { punch_at: string; punch_type: string }[]>()
+    for (const p of punches ?? []) {
+      const row = p as { employee_id: string; punch_at: string; punch_type: string }
+      if (!punchOnDate(row.punch_at, todayIso)) continue
+      const list = punchesByEmp.get(row.employee_id) ?? []
+      list.push({ punch_at: row.punch_at, punch_type: row.punch_type })
+      punchesByEmp.set(row.employee_id, list)
+    }
+    for (const [employeeId, dayPunches] of punchesByEmp) {
+      const resolved = resolveInOutFromPunches(dayPunches)
+      const existing = map.get(employeeId)
+      map.set(employeeId, {
+        ...(existing ?? { status: 'Absent', is_holiday: false, is_weekly_off: false }),
+        first_in: resolved.first_in ?? existing?.first_in ?? null,
+        last_out: resolved.last_out ?? existing?.last_out ?? null,
+      })
+    }
+
     setDailyByEmployee(map)
     setSyncedAt(new Date())
     setLoading(false)
@@ -193,6 +220,7 @@ export function LiveAttendancePage() {
                 className="rounded-xl border bg-card p-4 flex flex-col items-center text-center gap-2.5 hover:border-primary/40 hover:shadow-sm transition-all min-h-[11rem]"
               >
                 <Avatar className={cn('h-14 w-14 text-base font-semibold shrink-0', avatarColorFor(e.full_name))}>
+                  {e.photo_url && <AvatarImage src={e.photo_url} alt={e.full_name} />}
                   <AvatarFallback className="bg-transparent text-inherit">
                     {initialsFromName(e.full_name)}
                   </AvatarFallback>

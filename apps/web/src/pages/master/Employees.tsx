@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Plus, Pencil, RefreshCw, Loader2, Users, Search, ChevronRight, ArrowLeft, ArrowRight, Check, Camera, X, Trash2, Save, FileSpreadsheet } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
 import { findDuplicateForForm } from '@/lib/employeeDuplicateCheck'
 import { loadEmployeeDevicePin, syncEmployeeDevicePin } from '@/lib/employeeDevicePin'
+import { admsConnectionStatus, lastSeenBadge } from '@/lib/admsDeviceStatus'
 import { nextCode } from '@/lib/codegen'
 import { EMPLOYMENT_STATUSES, PAY_FREQUENCIES } from '@/lib/constants'
 import { PageHeader } from '@/components/master/PageHeader'
@@ -39,6 +40,15 @@ import {
 } from '@/components/payroll/AllowanceToggleField'
 
 type Lookup = { id: string; name?: string; title?: string; code?: string }
+
+type ZktDevice = {
+  id: string
+  name: string
+  push_token: string | null
+  last_seen_at: string | null
+  is_active: boolean
+  serial_no: string | null
+}
 
 type Employee = {
   id: string
@@ -152,7 +162,11 @@ export function EmployeesPage() {
   const [departments, setDepartments] = useState<Lookup[]>([])
   const [designations, setDesignations] = useState<Lookup[]>([])
   const [managers, setManagers] = useState<Lookup[]>([])
-  const [zktDevices, setZktDevices] = useState<{ id: string; name: string; ip_address: string | null }[]>([])
+  const [zktDevices, setZktDevices] = useState<ZktDevice[]>([])
+  const [selectedDeviceCloud, setSelectedDeviceCloud] = useState<{
+    device: ZktDevice
+    lastPunchAt: string | null
+  } | null>(null)
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -179,7 +193,7 @@ export function EmployeesPage() {
       supabase.from('employees').select('id, full_name, employee_code').eq('is_active', true).order('full_name'),
       supabase
         .from('attendance_devices')
-        .select('id, name, ip_address')
+        .select('id, name, push_token, last_seen_at, is_active, serial_no')
         .eq('device_type', 'ZKTeco')
         .eq('is_active', true)
         .order('name'),
@@ -188,8 +202,36 @@ export function EmployeesPage() {
     setDepartments((d.data ?? []).map((x) => ({ id: x.id, name: x.name })))
     setDesignations((des.data ?? []).map((x) => ({ id: x.id, title: x.title })))
     setManagers((emp.data ?? []).map((x) => ({ id: x.id, name: `${x.full_name} (${x.employee_code})` })))
-    setZktDevices((dev.data ?? []) as { id: string; name: string; ip_address: string | null }[])
+    setZktDevices((dev.data ?? []) as ZktDevice[])
   }
+
+  useEffect(() => {
+    if (!open || !form.attendance_device_id) {
+      setSelectedDeviceCloud(null)
+      return
+    }
+    const deviceId = form.attendance_device_id
+    void (async () => {
+      const [{ data: dev }, { data: punch }] = await Promise.all([
+        supabase
+          .from('attendance_devices')
+          .select('id, name, push_token, last_seen_at, is_active, serial_no')
+          .eq('id', deviceId)
+          .single(),
+        supabase
+          .from('attendance_punches')
+          .select('punch_at')
+          .eq('device_id', deviceId)
+          .eq('source', 'zkteco')
+          .order('punch_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ])
+      if (dev) {
+        setSelectedDeviceCloud({ device: dev as ZktDevice, lastPunchAt: punch?.punch_at ?? null })
+      }
+    })()
+  }, [open, form.attendance_device_id])
 
   async function load() {
     setLoading(true)
@@ -467,8 +509,7 @@ export function EmployeesPage() {
         await writeAuditLog({ action: 'UPDATE', entityType: 'employee', entityId: editing.id })
         if (mapResult.usedFallback) {
           toast.success('Profile saved — device + PIN linked', {
-            description:
-              'Stored in app settings for now. Run supabase/APPLY_PENDING_DEVICES.sql in Supabase when you can for full agent support.',
+            description: 'Device PIN saved for ADMS attendance import.',
           })
         } else {
           toast.success('Profile saved', {
@@ -525,7 +566,7 @@ export function EmployeesPage() {
         )
         if (mapResult.usedFallback) {
           toast.success('Profile saved — device + PIN linked', {
-            description: 'Run APPLY_PENDING_DEVICES.sql in Supabase when you can for full agent support.',
+            description: 'Device PIN saved for ADMS attendance import.',
           })
         }
       } catch (mapErr) {
@@ -1012,13 +1053,12 @@ export function EmployeesPage() {
                     {zktDevices.map((d) => (
                       <option key={d.id} value={d.id}>
                         {d.name}
-                        {d.ip_address ? ` (${d.ip_address})` : ''}
                       </option>
                     ))}
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Each device has its own IP. The agent on the office PC reads every active device from HRM and uses
-                    this mapping so PIN 5 on GUDAM and PIN 5 on OFFICE can be different employees.
+                    Link this employee to a ZKTeco terminal. ADMS push matches the PIN on the device to this
+                    employee in HRM.
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -1033,6 +1073,39 @@ export function EmployeesPage() {
                     disabled={!form.attendance_device_id}
                   />
                 </div>
+                {selectedDeviceCloud && (
+                  <div className="md:col-span-2 rounded-md border bg-muted/30 p-3 text-sm space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">Cloud link — {selectedDeviceCloud.device.name}</span>
+                      {(() => {
+                        const adms = admsConnectionStatus(
+                          selectedDeviceCloud.device,
+                          selectedDeviceCloud.lastPunchAt,
+                        )
+                        const seen = lastSeenBadge(selectedDeviceCloud.device.last_seen_at)
+                        return (
+                          <>
+                            <Badge variant={adms.variant}>{adms.label}</Badge>
+                            <Badge variant={seen.variant}>Handshake {seen.label}</Badge>
+                          </>
+                        )
+                      })()}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {admsConnectionStatus(
+                        selectedDeviceCloud.device,
+                        selectedDeviceCloud.lastPunchAt,
+                      ).detail}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      PIN {form.device_pin || '—'} must match the user ID on the terminal. Punches only import when
+                      the device is Online and ADMS fields are correct on the MB460.
+                    </p>
+                    <Link to="/admin/devices" className="text-xs text-primary underline-offset-4 hover:underline">
+                      Device troubleshooting →
+                    </Link>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label>Reports to</Label>
                   <Select value={form.reports_to_id} onChange={(e) => setForm({ ...form, reports_to_id: e.target.value })}>

@@ -24,6 +24,7 @@ import { LiveAttendancePage } from '@/pages/attendance/LiveAttendance'
 import { LateEmployeesPage } from '@/pages/attendance/LateEmployees'
 import { CorrectionsPage } from '@/pages/attendance/Corrections'
 import { MissingBiometricsPage } from '@/pages/attendance/MissingBiometrics'
+import { AttendancePunchesPage } from '@/pages/attendance/AttendancePunches'
 import { DevicesPage } from '@/pages/admin/Devices'
 import { ProfilePage } from '@/pages/Profile'
 import { LeavePage } from '@/pages/leave/Leave'
@@ -218,6 +219,14 @@ export default function App() {
                 element={
                   <ProtectedRoute perm="attendance.view">
                     <CorrectionsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="attendance/punches"
+                element={
+                  <ProtectedRoute perm="attendance.view">
+                    <AttendancePunchesPage />
                   </ProtectedRoute>
                 }
               />

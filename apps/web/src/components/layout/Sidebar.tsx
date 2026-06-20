@@ -1,8 +1,9 @@
-import { NavLink, useNavigate } from 'react-router-dom'
-import { Plus, LogOut } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { ChevronDown, ChevronRight, LogOut, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
-import { navSections, quickAddActions } from '@/lib/navConfig'
+import { navSections, quickAddActions, type NavItem } from '@/lib/navConfig'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,11 +13,60 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
+function navItemMatchesPath(item: NavItem, pathname: string) {
+  if (item.to === '/') return pathname === '/'
+  return pathname === item.to || pathname.startsWith(`${item.to}/`)
+}
+
+const sectionHeadingClass =
+  'px-2 pt-3 pb-1.5 text-sm font-bold text-foreground/90'
+
+function NavItemLink({ item }: { item: NavItem }) {
+  return (
+    <NavLink
+      to={item.to}
+      end={item.to === '/'}
+      className={({ isActive }) =>
+        cn(
+          'block px-2 py-1.5 text-[13.5px] rounded-md transition-colors',
+          isActive
+            ? 'text-primary font-semibold bg-primary/5'
+            : 'text-foreground/80 hover:text-foreground hover:bg-accent/60'
+        )
+      }
+    >
+      {item.label}
+    </NavLink>
+  )
+}
+
 export function Sidebar() {
   const { hasPermission, appUser, signOut } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({})
 
   const availableActions = quickAddActions.filter((a) => !a.perm || hasPermission(a.perm))
+
+  useEffect(() => {
+    navSections.forEach((section) => {
+      if (!section.collapsible || !section.heading) return
+      const visibleItems = section.items.filter((it) => !it.perm || hasPermission(it.perm))
+      const collapsibleItems = visibleItems.filter((item) => !item.pinned)
+      const hasActiveCollapsible = collapsibleItems.some((item) =>
+        navItemMatchesPath(item, location.pathname)
+      )
+      if (hasActiveCollapsible) {
+        setExpandedSections((prev) =>
+          prev[section.heading!] ? prev : { ...prev, [section.heading!]: true }
+        )
+      }
+    })
+  }, [location.pathname, hasPermission])
+
+  const toggleSection = (heading: string) => {
+    setExpandedSections((prev) => ({ ...prev, [heading]: !prev[heading] }))
+  }
 
   return (
     <aside className="hidden lg:flex flex-col w-64 shrink-0 border-r bg-card h-screen sticky top-0">
@@ -60,31 +110,49 @@ export function Sidebar() {
         {navSections.map((section, sIdx) => {
           const visibleItems = section.items.filter((it) => !it.perm || hasPermission(it.perm))
           if (visibleItems.length === 0) return null
+
+          const sectionKey = section.heading ?? `s-${sIdx}`
+          const isCollapsible = Boolean(section.collapsible && section.heading)
+          const pinnedItems = isCollapsible ? visibleItems.filter((item) => item.pinned) : []
+          const collapsibleItems = isCollapsible
+            ? visibleItems.filter((item) => !item.pinned)
+            : visibleItems
+          const isExpanded = section.heading ? Boolean(expandedSections[section.heading]) : false
+          const hasCollapsibleItems = collapsibleItems.length > 0
+          const showCollapsibleItems = !isCollapsible || !hasCollapsibleItems || isExpanded
+
           return (
-            <div key={section.heading ?? `s-${sIdx}`} className="mb-3">
-              {section.heading && (
-                <div className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
-                  {section.heading}
-                </div>
-              )}
-              <div>
-                {visibleItems.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.to === '/'}
-                    className={({ isActive }) =>
-                      cn(
-                        'block px-2 py-1.5 text-[13.5px] rounded-md transition-colors',
-                        isActive
-                          ? 'text-primary font-semibold bg-primary/5'
-                          : 'text-foreground/80 hover:text-foreground hover:bg-accent/60'
-                      )
-                    }
+            <div key={sectionKey} className="mb-3">
+              {section.heading &&
+                (isCollapsible && hasCollapsibleItems ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleSection(section.heading!)}
+                    className={cn(
+                      sectionHeadingClass,
+                      'flex w-full items-center gap-1.5 text-left hover:text-foreground transition-colors'
+                    )}
+                    aria-expanded={isExpanded}
                   >
-                    {item.label}
-                  </NavLink>
+                    {isExpanded ? (
+                      <ChevronDown className="h-3 w-3 shrink-0" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3 shrink-0" />
+                    )}
+                    <span>{section.heading}</span>
+                  </button>
+                ) : (
+                  <div className={sectionHeadingClass}>{section.heading}</div>
                 ))}
+
+              <div>
+                {pinnedItems.map((item) => (
+                  <NavItemLink key={item.to} item={item} />
+                ))}
+                {showCollapsibleItems &&
+                  collapsibleItems.map((item) => (
+                    <NavItemLink key={item.to} item={item} />
+                  ))}
               </div>
             </div>
           )

@@ -16,8 +16,15 @@ import { Link } from 'react-router-dom'
 import {
   genDevicePushToken,
   pushEndpointSplitFields,
-  pushEndpointUrlLegacy,
 } from '@/lib/zktPushUrl'
+import {
+  ADMS_DISCONNECT_NOTE,
+  ADMS_TROUBLESHOOT_STEPS,
+  admsConnectionStatus,
+  formatRelative,
+  lastSeenBadge,
+  needsAdmsTroubleshooting,
+} from '@/lib/admsDeviceStatus'
 import { loadAllDevicePinRows } from '@/lib/employeeDevicePin'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
@@ -56,76 +63,6 @@ type Device = {
 
 type Branch = { id: string; name: string }
 
-const ADMS_ONLINE_MS = 5 * 60 * 1000
-
-type AdmsConnection = {
-  label: string
-  variant: 'warm' | 'outline' | 'secondary' | 'destructive'
-  detail: string
-}
-
-function formatRelative(iso: string): string {
-  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
-}
-
-function admsConnectionStatus(
-  device: { push_token: string | null; last_seen_at: string | null; is_active: boolean },
-  lastPunchAt: string | null | undefined
-): AdmsConnection {
-  if (!device.is_active) {
-    return { label: 'Disabled', variant: 'secondary', detail: 'Enable device to use ADMS push.' }
-  }
-  if (!device.push_token?.trim()) {
-    return {
-      label: 'Not configured',
-      variant: 'secondary',
-      detail: 'Save a push token and paste the ADMS URL on the device.',
-    }
-  }
-  if (!device.last_seen_at) {
-    return {
-      label: 'Never connected',
-      variant: 'destructive',
-      detail: 'Device has not reached Supabase. Check ADMS URL on the terminal.',
-    }
-  }
-  const seenAge = Date.now() - new Date(device.last_seen_at).getTime()
-  if (lastPunchAt) {
-    const punchAge = Date.now() - new Date(lastPunchAt).getTime()
-    if (punchAge < 7 * 24 * 60 * 60 * 1000) {
-      return {
-        label: 'Receiving punches',
-        variant: 'warm',
-        detail: `Last punch imported ${formatRelative(lastPunchAt)}.`,
-      }
-    }
-  }
-  if (seenAge < ADMS_ONLINE_MS) {
-    return {
-      label: 'Handshake OK',
-      variant: 'outline',
-      detail: 'Device reached Supabase but no punches imported yet. Punch on device and wait 1–2 min.',
-    }
-  }
-  if (seenAge < 24 * 60 * 60 * 1000) {
-    return {
-      label: 'Stale',
-      variant: 'outline',
-      detail: `Last handshake ${formatRelative(device.last_seen_at)}. Check cloud connection on device.`,
-    }
-  }
-  return {
-    label: 'Offline',
-    variant: 'secondary',
-    detail: `Last handshake ${formatRelative(device.last_seen_at)}.`,
-  }
-}
-
 type PinEmployee = {
   id: string
   employee_code: string
@@ -162,16 +99,36 @@ const emptyForm = {
   notes: '',
 }
 
-function lastSeenBadge(iso: string | null): { label: string; variant: 'warm' | 'outline' | 'secondary' } {
-  if (!iso) return { label: 'Never', variant: 'secondary' }
-  const ageMs = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(ageMs / 60000)
-  if (mins < 5) return { label: 'Online', variant: 'warm' }
-  if (mins < 60) return { label: `${mins}m ago`, variant: 'outline' }
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return { label: `${hrs}h ago`, variant: 'outline' }
-  const days = Math.floor(hrs / 24)
-  return { label: `${days}d ago`, variant: 'secondary' }
+function AdmsTroubleshootPanel({
+  devices,
+  lastPunchByDevice,
+}: {
+  devices: Device[]
+  lastPunchByDevice: Map<string, string>
+}) {
+  const zkt = devices.filter((d) => isZkt(d.device_type) && d.is_active)
+  const troubled = zkt.filter((d) => needsAdmsTroubleshooting(d, lastPunchByDevice.get(d.id)))
+  if (troubled.length === 0) return null
+
+  return (
+    <Card className="border-amber-500/40 bg-amber-500/5">
+      <CardHeader>
+        <CardTitle className="text-base">Device keeps disconnecting?</CardTitle>
+        <CardDescription>{ADMS_DISCONNECT_NOTE}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <p className="text-muted-foreground">
+          {troubled.length} active ZKTeco device(s) are Stale, Offline, or Never connected:{' '}
+          <strong>{troubled.map((d) => d.name).join(', ')}</strong>
+        </p>
+        <ol className="list-decimal list-inside space-y-2 text-muted-foreground">
+          {ADMS_TROUBLESHOOT_STEPS.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
+      </CardContent>
+    </Card>
+  )
 }
 
 export function DevicesPage() {
@@ -467,6 +424,8 @@ export function DevicesPage() {
           </Link>
         </CardContent>
       </Card>
+
+      <AdmsTroubleshootPanel devices={rows} lastPunchByDevice={lastPunchByDevice} />
 
       <Card>
         <CardHeader>
@@ -817,7 +776,6 @@ export function DevicesPage() {
                   {form.push_token && (() => {
                     const split = pushEndpointSplitFields(form.push_token, form.serial_no)
                     const shortUrl = split.fullUrl
-                    const legacyUrl = pushEndpointUrlLegacy(form.push_token, form.serial_no)
                     return (
                       <>
                         <Label className="text-xs">Short push URL — paste on device</Label>
@@ -852,21 +810,11 @@ export function DevicesPage() {
                             Copy path only
                           </Button>
                         </div>
-                        {shortUrl !== legacyUrl && (
-                          <details className="text-[11px] text-muted-foreground">
-                            <summary className="cursor-pointer">Legacy long URL (still works)</summary>
-                            <div className="flex gap-2 mt-1">
-                              <Input readOnly value={legacyUrl} className="font-mono text-[10px]" />
-                              <Button type="button" variant="outline" size="sm" onClick={() => void copyToken(legacyUrl)}>
-                                Copy
-                              </Button>
-                            </div>
-                          </details>
-                        )}
                         <ol className="text-xs text-muted-foreground list-decimal list-inside space-y-1 mt-2">
-                          <li>On device: Menu → Comm → Cloud Server / ADMS</li>
+                          <li>On device: Menu → Comm → Cloud Server → ADMS</li>
+                          <li>Enable domain name, HTTPS on, port 443</li>
                           <li>Paste short URL or use split server + path above</li>
-                          <li>Save and punch — status above updates when Supabase receives data</li>
+                          <li>Save, reboot device, then punch — punches appear here via ADMS</li>
                         </ol>
                       </>
                     )

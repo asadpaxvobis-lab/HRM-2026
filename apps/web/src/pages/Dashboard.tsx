@@ -13,7 +13,6 @@ import {
   AlertTriangle,
   Shield,
   Fingerprint,
-  ScanFace,
   RefreshCw,
   Search,
   type LucideIcon,
@@ -27,9 +26,6 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { buildBiometricGaps, type BiometricGapsByDepartment } from '@/lib/biometricGaps'
-import { loadAllDevicePinRows } from '@/lib/employeeDevicePin'
-import { fetchZktBiometricStatus } from '@/lib/zktAgent'
 import {
   countLiveAttendance,
   type LiveAttendanceCounts,
@@ -45,6 +41,9 @@ type Stat = {
   perm?: string
   onClick?: () => void
 }
+
+type PinGapRow = { employeeId: string; code: string; name: string; department: string }
+type PinGapsByDepartment = { department: string; rows: PinGapRow[] }
 
 export function DashboardPage() {
   const { appUser, roles, permissions, hasPermission } = useAuth()
@@ -71,10 +70,8 @@ export function DashboardPage() {
   const [announcements, setAnnouncements] = useState<
     { id: string; title: string; category: string; priority: string; pinned: boolean; published_at: string | null; unread: boolean }[]
   >([])
-  const [bioGapsByDept, setBioGapsByDept] = useState<BiometricGapsByDepartment[]>([])
-  const [bioLoading, setBioLoading] = useState(false)
-  const [bioAgentOffline, setBioAgentOffline] = useState(false)
-  const [bioScannedAt, setBioScannedAt] = useState<string | null>(null)
+  const [pinGapsByDept, setPinGapsByDept] = useState<PinGapsByDepartment[]>([])
+  const [pinGapsLoading, setPinGapsLoading] = useState(false)
   const [liveCounts, setLiveCounts] = useState<LiveAttendanceCounts>({
     all: 0,
     in: 0,
@@ -287,49 +284,45 @@ export function DashboardPage() {
     void load().catch(() => {})
   }, [todayIso, in30Iso, appUser?.id, hasPermission])
 
-  const loadBiometricGaps = async () => {
-    if (!hasPermission('employee.view') || !hasPermission('attendance.view') || !appUser?.company_id) return
-    setBioLoading(true)
+  const loadPinGaps = async () => {
+    if (!hasPermission('employee.view') || !appUser?.company_id) return
+    setPinGapsLoading(true)
     try {
-      const [empRes, scan] = await Promise.all([
-        supabase
-          .from('employees')
-          .select('id, employee_code, full_name, device_pin, departments(name)')
-          .eq('is_active', true)
-          .order('full_name'),
-        fetchZktBiometricStatus(),
-      ])
-      const pinRows = await loadAllDevicePinRows(appUser.company_id)
-      const employees = (empRes.data ?? []).map((r: Record<string, unknown>) => {
-        const dep = r.departments
-        const d = Array.isArray(dep) ? (dep[0] as { name: string } | null) : (dep as { name: string } | null)
-        return {
-          id: r.id as string,
-          employee_code: r.employee_code as string,
-          full_name: r.full_name as string,
-          device_pin: r.device_pin as number | null,
-          departments: d,
-        }
-      })
-      const { byDepartment, agentOffline, scannedAt } = buildBiometricGaps(
-        employees,
-        pinRows.map((p) => ({
-          employee_id: p.employee_id,
-          device_id: p.device_id,
-          device_pin: p.device_pin,
-        })),
-        scan
+      const { data } = await supabase
+        .from('employees')
+        .select('id, employee_code, full_name, device_pin, departments(name)')
+        .eq('is_active', true)
+        .order('full_name')
+      const grouped = new Map<string, PinGapRow[]>()
+      for (const row of data ?? []) {
+        const pin = row.device_pin as number | null
+        if (pin != null && pin > 0) continue
+        const dep = row.departments as { name: string } | { name: string }[] | null
+        const department = (Array.isArray(dep) ? dep[0]?.name : dep?.name)?.trim() || 'Unassigned'
+        const list = grouped.get(department) ?? []
+        list.push({
+          employeeId: row.id as string,
+          code: row.employee_code as string,
+          name: row.full_name as string,
+          department,
+        })
+        grouped.set(department, list)
+      }
+      setPinGapsByDept(
+        Array.from(grouped.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([department, rows]) => ({
+            department,
+            rows: rows.sort((a, b) => a.name.localeCompare(b.name)),
+          }))
       )
-      setBioGapsByDept(byDepartment)
-      setBioAgentOffline(agentOffline)
-      setBioScannedAt(scannedAt)
     } finally {
-      setBioLoading(false)
+      setPinGapsLoading(false)
     }
   }
 
   useEffect(() => {
-    void loadBiometricGaps()
+    void loadPinGaps()
   }, [appUser?.company_id, hasPermission])
 
   const reloadLiveCounts = useCallback(async () => {
@@ -460,24 +453,24 @@ export function DashboardPage() {
 
   const visibleStats = statTiles.filter((s) => !s.perm || hasPermission(s.perm))
 
-  const missingBioCount = useMemo(
-    () => bioGapsByDept.reduce((n, d) => n + d.rows.length, 0),
-    [bioGapsByDept]
+  const missingPinCount = useMemo(
+    () => pinGapsByDept.reduce((n, d) => n + d.rows.length, 0),
+    [pinGapsByDept]
   )
 
   const overviewStats: Stat[] = useMemo(() => {
     const tiles = [...visibleStats]
     if (hasPermission('employee.view') && hasPermission('attendance.view')) {
       tiles.push({
-        label: 'Missing biometrics',
-        value: bioLoading && bioGapsByDept.length === 0 && !bioAgentOffline ? '…' : missingBioCount,
+        label: 'Missing device PIN',
+        value: pinGapsLoading && pinGapsByDept.length === 0 ? '…' : missingPinCount,
         icon: Fingerprint,
-        hint: bioAgentOffline ? 'Agent offline — refresh' : 'Missing IN / OUT logs',
-        to: '/attendance/missing-biometrics',
+        hint: 'ADMS cannot import punches without PIN',
+        to: '#pin-gaps',
       })
     }
     return tiles
-  }, [visibleStats, hasPermission, bioLoading, bioGapsByDept.length, missingBioCount, bioAgentOffline])
+  }, [visibleStats, hasPermission, pinGapsLoading, pinGapsByDept.length, missingPinCount])
 
   const filteredOverviewStats = useMemo(() => {
     const q = overviewQuery.toLowerCase().trim()
@@ -613,92 +606,64 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {/* Missing fingerprint / face on device — grouped by department */}
+      {/* Employees missing device PIN for ADMS import */}
       {hasPermission('employee.view') && hasPermission('attendance.view') && (
-        <Card id="bio-gaps">
+        <Card id="pin-gaps">
           <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
               <CardTitle className="text-base flex items-center gap-2">
                 <Fingerprint className="h-4 w-4 text-primary" />
-                Biometric enrollment gaps by department
+                Device PIN gaps (ADMS)
               </CardTitle>
               <CardDescription>
-                Active employees with a device PIN who are missing fingerprint and/or face on their ZKTeco
-                machine. Each person is listed once.
+                Active employees without a Device PIN. Set PIN in Employees → edit so ADMS punches can import.
+                Enroll fingerprint/face on the ZKT terminal directly.
               </CardDescription>
             </div>
             <Button
               variant="outline"
               size="sm"
               className="shrink-0 print:hidden"
-              disabled={bioLoading}
-              onClick={() => void loadBiometricGaps()}
+              disabled={pinGapsLoading}
+              onClick={() => void loadPinGaps()}
             >
-              <RefreshCw className={cn('h-4 w-4 mr-1', bioLoading && 'animate-spin')} />
+              <RefreshCw className={cn('h-4 w-4 mr-1', pinGapsLoading && 'animate-spin')} />
               Refresh
             </Button>
           </CardHeader>
           <CardContent className="space-y-4">
-            {bioLoading && bioGapsByDept.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Scanning devices via agent…</p>
-            ) : bioAgentOffline ? (
+            {pinGapsLoading && pinGapsByDept.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : pinGapsByDept.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                ZKT agent is not reachable. Run the agent on the office PC (with ZKTime installed), then click
-                Refresh.
-              </p>
-            ) : bioGapsByDept.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No missing fingerprint or face enrollments found for mapped employees.
-                {bioScannedAt && (
-                  <span className="block text-xs mt-1">
-                    Last scan: {new Date(bioScannedAt).toLocaleString()}
-                  </span>
-                )}
+                All active employees have a Device PIN for ADMS import.
               </p>
             ) : (
-              <>
-                {bioScannedAt && (
-                  <p className="text-xs text-muted-foreground">
-                    Last scan: {new Date(bioScannedAt).toLocaleString()}
-                  </p>
-                )}
-                <div className="space-y-5">
-                  {bioGapsByDept.map((dept) => (
-                    <div key={dept.department}>
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <h4 className="text-sm font-semibold">{dept.department}</h4>
-                        <span className="text-xs text-muted-foreground tabular-nums">{dept.rows.length}</span>
-                      </div>
-                      <ul className="divide-y rounded-lg border text-sm">
-                        {dept.rows.map((row) => (
-                          <li key={row.employeeId} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
-                            <div className="min-w-0">
-                              <Link to={`/employees/${row.employeeId}`} className="font-medium hover:text-primary">
-                                {row.name}
-                              </Link>
-                              <div className="text-xs text-muted-foreground font-mono">{row.code}</div>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {row.missingFinger && (
-                                <Badge variant="outline" className="gap-1 text-amber-700 border-amber-300 dark:text-amber-300">
-                                  <Fingerprint className="h-3 w-3" />
-                                  Finger missing
-                                </Badge>
-                              )}
-                              {row.missingFace && (
-                                <Badge variant="outline" className="gap-1 text-rose-700 border-rose-300 dark:text-rose-300">
-                                  <ScanFace className="h-3 w-3" />
-                                  Face missing
-                                </Badge>
-                              )}
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
+              <div className="space-y-5">
+                {pinGapsByDept.map((dept) => (
+                  <div key={dept.department}>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <h4 className="text-sm font-semibold">{dept.department}</h4>
+                      <span className="text-xs text-muted-foreground tabular-nums">{dept.rows.length}</span>
                     </div>
-                  ))}
-                </div>
-              </>
+                    <ul className="divide-y rounded-lg border text-sm">
+                      {dept.rows.map((row) => (
+                        <li key={row.employeeId} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+                          <div className="min-w-0">
+                            <Link to={`/employees/${row.employeeId}`} className="font-medium hover:text-primary">
+                              {row.name}
+                            </Link>
+                            <div className="text-xs text-muted-foreground font-mono">{row.code}</div>
+                          </div>
+                          <Badge variant="outline" className="text-amber-700 border-amber-300 dark:text-amber-300">
+                            No device PIN
+                          </Badge>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>

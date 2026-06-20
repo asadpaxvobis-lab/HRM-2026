@@ -37,6 +37,7 @@ import {
   nextDateIso,
   punchOnDate,
   resolveInOutFromPunches,
+  todayInCompanyTz,
 } from '@/lib/attendance'
 import { toCsv, downloadCsv } from '@/lib/csv'
 
@@ -103,7 +104,7 @@ type Employee = {
 type Branch = { id: string; name: string }
 type Department = { id: string; name: string }
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => todayInCompanyTz()
 
 const statusVariant = (s: string): 'warm' | 'outline' | 'secondary' => {
   if (s === 'Present') return 'warm'
@@ -246,10 +247,14 @@ function minutesColumnValue(minutes: number, show: boolean): string {
 function getDisplayStatus(d: Daily | undefined, dateStr: string): string {
   if (d?.is_holiday) return 'Holiday'
   if (d?.is_weekly_off) return 'Weekly Off'
-  const status = d?.status ?? 'Absent'
   const m = rowMetrics(d, dateStr)
-  if (d?.first_in && status === 'Present' && m.late_minutes > 0) return 'Late'
-  return status
+  if (d?.first_in) {
+    const base = d.status ?? 'Absent'
+    if (['Leave', 'Holiday', 'Weekly Off', 'Half Day'].includes(base)) return base
+    if (m.late_minutes > 0) return 'Late'
+    return 'Present'
+  }
+  return d?.status ?? 'Absent'
 }
 
 function employeeMatchesQuery(e: Employee, q: string): boolean {
@@ -337,28 +342,54 @@ export function AttendancePage() {
     }
     setBranches((br.data ?? []) as Branch[])
     setDepartments((dp.data ?? []) as Department[])
-    if (daily.data) {
-      const punchesByEmp = new Map<string, { punch_at: string; punch_type: string }[]>()
-      for (const p of punches.data ?? []) {
-        const row = p as { employee_id: string; punch_at: string; punch_type: string }
-        if (!punchOnDate(row.punch_at, date)) continue
-        const list = punchesByEmp.get(row.employee_id) ?? []
-        list.push({ punch_at: row.punch_at, punch_type: row.punch_type })
-        punchesByEmp.set(row.employee_id, list)
-      }
 
-      const dailyRows = daily.data.map((r: Record<string, unknown>) => {
-        const sh = r.shifts
-        const daily = { ...r, shifts: Array.isArray(sh) ? sh[0] : sh } as Daily
-        const dayPunches = punchesByEmp.get(daily.employee_id)
-        if (dayPunches?.length) {
-          const resolved = resolveInOutFromPunches(dayPunches, { shift: daily.shifts })
-          return { ...daily, first_in: resolved.first_in, last_out: resolved.last_out }
-        }
-        return daily
-      })
-      setRows(dailyRows)
+    const punchesByEmp = new Map<string, { punch_at: string; punch_type: string }[]>()
+    for (const p of punches.data ?? []) {
+      const row = p as { employee_id: string; punch_at: string; punch_type: string }
+      if (!punchOnDate(row.punch_at, date)) continue
+      const list = punchesByEmp.get(row.employee_id) ?? []
+      list.push({ punch_at: row.punch_at, punch_type: row.punch_type })
+      punchesByEmp.set(row.employee_id, list)
     }
+
+    const dailyByEmpId = new Map<string, Daily>()
+    for (const r of daily.data ?? []) {
+      const sh = r.shifts
+      const dailyRow = { ...r, shifts: Array.isArray(sh) ? sh[0] : sh } as Daily
+      const dayPunches = punchesByEmp.get(dailyRow.employee_id)
+      if (dayPunches?.length) {
+        const resolved = resolveInOutFromPunches(dayPunches, { shift: dailyRow.shifts })
+        dailyByEmpId.set(dailyRow.employee_id, {
+          ...dailyRow,
+          first_in: resolved.first_in ?? dailyRow.first_in,
+          last_out: resolved.last_out ?? dailyRow.last_out,
+        })
+      } else {
+        dailyByEmpId.set(dailyRow.employee_id, dailyRow)
+      }
+    }
+
+    for (const [employeeId, dayPunches] of punchesByEmp) {
+      if (dailyByEmpId.has(employeeId)) continue
+      const resolved = resolveInOutFromPunches(dayPunches)
+      dailyByEmpId.set(employeeId, {
+        id: '',
+        employee_id: employeeId,
+        attendance_date: date,
+        status: resolved.first_in ? 'Present' : 'Absent',
+        first_in: resolved.first_in,
+        last_out: resolved.last_out,
+        worked_minutes: 0,
+        late_minutes: 0,
+        early_out_minutes: 0,
+        overtime_minutes: 0,
+        is_weekly_off: false,
+        is_holiday: false,
+        shifts: null,
+      })
+    }
+
+    setRows([...dailyByEmpId.values()])
     setLoading(false)
   }
 

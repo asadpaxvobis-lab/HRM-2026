@@ -326,6 +326,11 @@ export function nextDateIso(dateStr: string): string {
   return new Date(Date.UTC(y, mo - 1, d + 1)).toISOString().slice(0, 10)
 }
 
+/** Today's date in company timezone (YYYY-MM-DD). Avoid UTC `toISOString()` for attendance dates. */
+export function todayInCompanyTz(tz = 'Asia/Karachi'): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: tz })
+}
+
 /** Local calendar date for a punch in company timezone (default Asia/Karachi). */
 export function punchOnDate(punchAt: string, dateStr: string, tz = 'Asia/Karachi'): boolean {
   const local = new Date(punchAt).toLocaleDateString('en-CA', { timeZone: tz })
