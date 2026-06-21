@@ -92,15 +92,6 @@ export function LoginPage() {
               {busy ? 'Signing in…' : 'Sign in'}
             </Button>
           </form>
-
-          <div className="text-xs text-muted-foreground border-t pt-4">
-            <div className="font-medium text-foreground/80 mb-1">First-time admin login</div>
-            <div>
-              <code className="text-foreground">admin@hrm.com</code> /{' '}
-              <code className="text-foreground">admin123</code>
-              <span className="block mt-1">You will be required to set a new password on first login.</span>
-            </div>
-          </div>
         </div>
       </div>
 
