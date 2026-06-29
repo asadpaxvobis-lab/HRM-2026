@@ -364,3 +364,54 @@ export function resolveInOutFromPunches(
     last_out: outs.length ? outs[outs.length - 1].punch_at : null,
   }
 }
+
+export type AttendancePeriodStats = {
+  presentDays: number
+  absentDays: number
+  leaveDays: number
+  workingDays: number
+  presentPct: number
+  absentPct: number
+  leavePct: number
+}
+
+/** Present / absent / leave share of working days (excludes holiday & weekly off). */
+export function computeAttendancePeriodStats(
+  rows: { status: string }[]
+): AttendancePeriodStats {
+  let presentDays = 0
+  let absentDays = 0
+  let leaveDays = 0
+  let workingDays = 0
+
+  for (const row of rows) {
+    const status = row.status
+    if (status === 'Holiday' || status === 'Weekly Off') continue
+    workingDays += 1
+    if (status === 'Present' || status === 'Late') presentDays += 1
+    else if (status === 'Half Day') presentDays += 0.5
+    else if (status === 'Absent') absentDays += 1
+    else if (status === 'Leave') leaveDays += 1
+  }
+
+  const pct = (value: number) =>
+    workingDays > 0 ? Math.round((value / workingDays) * 1000) / 10 : 0
+
+  return {
+    presentDays,
+    absentDays,
+    leaveDays,
+    workingDays,
+    presentPct: pct(presentDays),
+    absentPct: pct(absentDays),
+    leavePct: pct(leaveDays),
+  }
+}
+
+export function monthStartIso(dateIso: string): string {
+  return `${dateIso.slice(0, 7)}-01`
+}
+
+export function yearStartIso(dateIso: string): string {
+  return `${dateIso.slice(0, 4)}-01-01`
+}

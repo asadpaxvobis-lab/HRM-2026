@@ -155,6 +155,35 @@ export async function buildTokenMapForEmployee(employeeId: string): Promise<Toke
   }
 }
 
+/** Sample values for template preview (no employee selected). */
+export function buildSampleTokenMap(): TokenMap {
+  return {
+    employee_name: 'Muhammad Ali Khan',
+    employee_code: 'EMP-0042',
+    first_name: 'Muhammad',
+    last_name: 'Khan',
+    designation: 'Production Supervisor',
+    department: 'Packing',
+    branch: 'Godown 1',
+    date_of_joining: '15 January 2024',
+    cnic: '35201-1234567-1',
+    email: 'ali.khan@company.com',
+    phone: '0300-1234567',
+    salary_basic: '45,000',
+    salary_house_rent: '12,000',
+    salary_medical: '3,000',
+    salary_conveyance: '2,500',
+    salary_utilities: '0',
+    salary_allowances: '5,500',
+    salary_gross: '62,500',
+    company_name: 'Your Company Name',
+    company_address: '123 Industrial Area, Lahore, Pakistan',
+    date_today: fmtDate(new Date().toISOString()),
+    purpose: '[purpose / reason]',
+    warning_reason: '[reason for warning or termination]',
+  }
+}
+
 /**
  * Replace {{token}} placeholders. Whitespace inside the braces is tolerated.
  * Tokens not present in the map are left untouched so the author notices.

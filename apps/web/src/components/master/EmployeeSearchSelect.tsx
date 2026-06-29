@@ -33,18 +33,24 @@ export function EmployeeSearchSelect({
   const rootRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
-  const selected = useMemo(() => employees.find((e) => e.id === value), [employees, value])
+  const sortedEmployees = useMemo(() => {
+    return [...employees].sort((a, b) =>
+      (a.employee_code || '').localeCompare(b.employee_code || '', undefined, { numeric: true, sensitivity: 'base' })
+    )
+  }, [employees])
+
+  const selected = useMemo(() => sortedEmployees.find((e) => e.id === value), [sortedEmployees, value])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return employees
-    return employees.filter(
+    if (!q) return sortedEmployees
+    return sortedEmployees.filter(
       (e) =>
         e.full_name.toLowerCase().includes(q) ||
         e.employee_code.toLowerCase().includes(q) ||
         `${e.employee_code} — ${e.full_name}`.toLowerCase().includes(q)
     )
-  }, [employees, query])
+  }, [sortedEmployees, query])
 
   useEffect(() => {
     setQuery('')

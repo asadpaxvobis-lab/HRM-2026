@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, Save, FileText, Trash2, Copy } from 'lucide-react'
+import { Plus, Pencil, RefreshCw, Loader2, Save, FileText, Trash2, Copy, Eye } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
@@ -23,7 +23,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { toast } from 'sonner'
-import { AVAILABLE_TOKENS, LETTER_TYPES, LETTER_TYPE_LABELS, type LetterType } from '@/lib/letters'
+import { AVAILABLE_TOKENS, LETTER_TYPES, LETTER_TYPE_LABELS, buildSampleTokenMap, buildTokenMapForEmployee, renderTemplate, type LetterType } from '@/lib/letters'
+import { LetterPreviewPaper } from '@/components/letters/LetterPreviewPaper'
+import { DEFAULT_LETTER_TEMPLATES } from '@/lib/defaultLetterTemplates'
+import { seedDefaultLetterTemplates } from '@/lib/seedLetterTemplates'
 
 type Template = {
   id: string
@@ -56,10 +59,63 @@ export function LetterTemplatesPage() {
   const [form, setForm] = useState(emptyForm)
   const [filterType, setFilterType] = useState('')
   const [busy, setBusy] = useState(false)
+  const [seeding, setSeeding] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewTitle, setPreviewTitle] = useState('')
+  const [previewSubject, setPreviewSubject] = useState('')
+  const [previewBody, setPreviewBody] = useState('')
+  const [previewEmployeeId, setPreviewEmployeeId] = useState('')
+  const [previewEmployees, setPreviewEmployees] = useState<{ id: string; full_name: string; employee_code: string }[]>([])
+  const [previewCompany, setPreviewCompany] = useState<{
+    name: string
+    address: string | null
+    phone: string | null
+    email: string | null
+    logo_url: string | null
+  } | null>(null)
+  const [previewRaw, setPreviewRaw] = useState({ subject: '', body: '' })
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  const installDefaults = async () => {
+    if (!appUser?.company_id) return
+    setSeeding(true)
+    const result = await seedDefaultLetterTemplates(appUser.company_id)
+    setSeeding(false)
+    if (result.error) {
+      toast.error('Could not install templates', { description: result.error })
+      return
+    }
+    if (result.inserted === 0) {
+      toast.info('All default templates are already installed')
+    } else {
+      toast.success(`Installed ${result.inserted} template(s)`)
+    }
+    void load()
+  }
 
   async function load() {
     setLoading(true)
-    const { data, error } = await supabase.from('letter_templates').select('*').order('name')
+    let { data, error } = await supabase.from('letter_templates').select('*').order('name')
+    if (error) {
+      toast.error('Failed to load templates', { description: error.message })
+      setLoading(false)
+      return
+    }
+
+    if (canManage && appUser?.company_id) {
+      const result = await seedDefaultLetterTemplates(appUser.company_id)
+      if (result.error) {
+        toast.error('Could not install default templates', { description: result.error })
+      } else if (result.inserted > 0) {
+        const reloaded = await supabase.from('letter_templates').select('*').order('name')
+        data = reloaded.data
+        error = reloaded.error
+        if (!error) {
+          toast.success(`Added ${result.inserted} default letter template(s)`)
+        }
+      }
+    }
+
     if (error) toast.error('Failed to load templates', { description: error.message })
     else setRows((data ?? []) as Template[])
     setLoading(false)
@@ -171,6 +227,69 @@ export function LetterTemplatesPage() {
     void load()
   }
 
+  async function ensurePreviewContext() {
+    if (!appUser?.company_id) return null
+    if (previewCompany && previewEmployees.length > 0) return previewCompany
+    const [{ data: company }, { data: emps }] = await Promise.all([
+      supabase
+        .from('companies')
+        .select('name, address, phone, email, logo_url')
+        .eq('id', appUser.company_id)
+        .single(),
+      supabase
+        .from('employees')
+        .select('id, full_name, employee_code')
+        .eq('is_active', true)
+        .order('full_name')
+        .limit(500),
+    ])
+    if (company) setPreviewCompany(company)
+    setPreviewEmployees((emps ?? []) as { id: string; full_name: string; employee_code: string }[])
+    return company ?? previewCompany
+  }
+
+  async function renderPreview(
+    subject: string,
+    body: string,
+    employeeId: string,
+    company?: typeof previewCompany
+  ) {
+    const tokens = employeeId
+      ? await buildTokenMapForEmployee(employeeId)
+      : buildSampleTokenMap()
+    const co = company ?? previewCompany
+    if (!employeeId && co?.name) {
+      tokens.company_name = co.name
+      tokens.company_address = co.address ?? ''
+    }
+    return {
+      subject: renderTemplate(subject, tokens),
+      body: renderTemplate(body, tokens),
+    }
+  }
+
+  async function openPreview(title: string, subject: string, body: string, employeeId = '') {
+    setPreviewTitle(title)
+    setPreviewRaw({ subject, body })
+    setPreviewEmployeeId(employeeId)
+    setPreviewOpen(true)
+    setPreviewLoading(true)
+    const company = await ensurePreviewContext()
+    const rendered = await renderPreview(subject, body, employeeId, company)
+    setPreviewSubject(rendered.subject)
+    setPreviewBody(rendered.body)
+    setPreviewLoading(false)
+  }
+
+  async function onPreviewEmployeeChange(employeeId: string) {
+    setPreviewEmployeeId(employeeId)
+    setPreviewLoading(true)
+    const rendered = await renderPreview(previewRaw.subject, previewRaw.body, employeeId)
+    setPreviewSubject(rendered.subject)
+    setPreviewBody(rendered.body)
+    setPreviewLoading(false)
+  }
+
   const insertToken = (token: string) => {
     const el = document.getElementById('tpl-body') as HTMLTextAreaElement | null
     if (!el) return
@@ -196,6 +315,10 @@ export function LetterTemplatesPage() {
               <RefreshCw className="h-4 w-4" />
             </Button>
             <HasPermission perm="letter.template">
+              <Button variant="outline" size="sm" onClick={() => void installDefaults()} disabled={seeding}>
+                {seeding ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                Install defaults ({DEFAULT_LETTER_TEMPLATES.length})
+              </Button>
               <Button size="sm" onClick={() => void openCreate()}>
                 <Plus className="h-4 w-4" /> New template
               </Button>
@@ -229,9 +352,15 @@ export function LetterTemplatesPage() {
               <Loader2 className="h-5 w-5 animate-spin" />
             </div>
           ) : filtered.length === 0 ? (
-            <div className="p-12 text-center text-sm text-muted-foreground">
+            <div className="p-12 text-center text-sm text-muted-foreground space-y-4">
               <FileText className="h-8 w-8 mx-auto mb-3 opacity-50" />
-              No templates yet.
+              <p>No templates yet.</p>
+              {canManage && (
+                <Button size="sm" onClick={() => void installDefaults()} disabled={seeding}>
+                  {seeding ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                  Install {DEFAULT_LETTER_TEMPLATES.length} default templates
+                </Button>
+              )}
             </div>
           ) : (
             <div className="divide-y">
@@ -246,6 +375,14 @@ export function LetterTemplatesPage() {
                     {LETTER_TYPE_LABELS[t.letter_type]}
                   </Badge>
                   {!t.is_active && <Badge variant="secondary">Inactive</Badge>}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="Preview"
+                    onClick={() => void openPreview(t.name, t.subject, t.body)}
+                  >
+                    <Eye className="h-4 w-4" />
+                  </Button>
                   {canManage && (
                     <div className="flex items-center gap-1">
                       <Button variant="ghost" size="sm" title="Duplicate" onClick={() => void duplicate(t)}>
@@ -349,15 +486,67 @@ export function LetterTemplatesPage() {
                 Active
               </label>
             </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                Cancel
+            <DialogFooter className="gap-2 sm:justify-between flex-wrap">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void openPreview(form.name || 'Template preview', form.subject, form.body)}
+                disabled={!form.subject.trim() && !form.body.trim()}
+              >
+                <Eye className="h-4 w-4" /> Preview
               </Button>
-              <Button type="submit" disabled={busy}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
-              </Button>
+              <div className="flex gap-2 ml-auto">
+                <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
+                </Button>
+              </div>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="sm:max-w-4xl max-h-[92vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Preview — {previewTitle}</DialogTitle>
+            <DialogDescription>
+              Sample data is used until you pick an employee. This matches the printed letter layout.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2 max-w-md">
+              <Label className="text-xs">Preview with employee (optional)</Label>
+              <Select
+                value={previewEmployeeId}
+                onChange={(e) => void onPreviewEmployeeChange(e.target.value)}
+              >
+                <option value="">Sample data</option>
+                {previewEmployees.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.full_name} ({e.employee_code})
+                  </option>
+                ))}
+              </Select>
+            </div>
+            {previewLoading ? (
+              <div className="py-16 grid place-items-center">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <div className="rounded-lg border bg-muted/30 p-4 overflow-x-auto">
+                <LetterPreviewPaper
+                  subject={previewSubject}
+                  body={previewBody}
+                  letterNo="LT-PREVIEW"
+                  company={previewCompany}
+                  compact
+                />
+              </div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

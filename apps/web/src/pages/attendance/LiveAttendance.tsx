@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, Loader2, MapPin, RefreshCw, Search } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Activity, ChevronDown, Loader2, MapPin, RefreshCw, Search } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { PageHeader } from '@/components/master/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
+import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { avatarColorFor, cn, initialsFromName } from '@/lib/utils'
 import {
@@ -16,13 +18,19 @@ import {
   type LiveAttendanceBucket,
   type LiveAttendanceDaily,
 } from '@/lib/liveAttendance'
-import { nextDateIso, punchOnDate, resolveInOutFromPunches, todayInCompanyTz } from '@/lib/attendance'
+import {
+  nextDateIso,
+  punchOnDate,
+  resolveInOutFromPunches,
+  todayInCompanyTz,
+} from '@/lib/attendance'
 
 type Employee = {
   id: string
   employee_code: string
   full_name: string
   photo_url: string | null
+  branch_id?: string | null
   branches: { name: string } | null
 }
 
@@ -42,23 +50,42 @@ const fmtTime = (iso: string | null | undefined) =>
     ? new Date(iso).toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit', hour12: true })
     : null
 
+const BRANCH_SORT_ORDER = ['office', 'godown 1', 'godown  1', 'emb godown']
+
+const getBranchOrderIndex = (name: string) => {
+  const normalized = name.toLowerCase().trim()
+  const idx = BRANCH_SORT_ORDER.indexOf(normalized)
+  return idx === -1 ? 999 : idx
+}
+
 export function LiveAttendancePage() {
+  const navigate = useNavigate()
   const todayIso = useMemo(() => todayInCompanyTz(), [])
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([])
+  const [selectedBranchId, setSelectedBranchId] = useState<string>('all')
   const [dailyByEmployee, setDailyByEmployee] = useState<Map<string, LiveAttendanceDaily>>(new Map())
   const [loading, setLoading] = useState(true)
   const [syncedAt, setSyncedAt] = useState<Date | null>(null)
   const [query, setQuery] = useState('')
   const [bucketFilter, setBucketFilter] = useState<BucketFilter>('all')
+  const [collapsedBranches, setCollapsedBranches] = useState<Record<string, boolean>>({})
+
+  const toggleBranchCollapse = (branchName: string) => {
+    setCollapsedBranches((prev) => ({
+      ...prev,
+      [branchName]: !prev[branchName],
+    }))
+  }
 
   async function load() {
     setLoading(true)
-    const [{ data: emps }, { data: daily }, { data: punches }] = await Promise.all([
+    const [{ data: emps }, { data: daily }, { data: punches }, { data: branchRows }] = await Promise.all([
       supabase
         .from('employees')
-        .select('id, employee_code, full_name, photo_url, branches(name)')
+        .select('id, employee_code, full_name, photo_url, branch_id, branches(name)')
         .eq('is_active', true)
-        .order('full_name'),
+        .order('employee_code'),
       supabase
         .from('attendance_daily')
         .select('employee_id, status, first_in, last_out, is_holiday, is_weekly_off')
@@ -68,6 +95,11 @@ export function LiveAttendancePage() {
         .select('employee_id, punch_at, punch_type')
         .gte('punch_at', `${todayIso}T00:00:00+05:00`)
         .lt('punch_at', `${nextDateIso(todayIso)}T00:00:00+05:00`),
+      supabase
+        .from('branches')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('name'),
     ])
 
     setEmployees(
@@ -78,10 +110,13 @@ export function LiveAttendancePage() {
           employee_code: r.employee_code as string,
           full_name: r.full_name as string,
           photo_url: (r.photo_url as string | null) ?? null,
+          branch_id: r.branch_id as string | null,
           branches: Array.isArray(b) ? (b[0] as { name: string }) : (b as { name: string } | null),
         }
       })
     )
+
+    setBranches((branchRows ?? []) as { id: string; name: string }[])
 
     const map = new Map<string, LiveAttendanceDaily>()
     for (const row of daily ?? []) {
@@ -135,17 +170,28 @@ export function LiveAttendancePage() {
     }
   }, [todayIso])
 
+  const branchFilteredEmployees = useMemo(() => {
+    const list = employees.filter((e) => {
+      if (selectedBranchId === 'all') return true
+      if (selectedBranchId === 'none') return !e.branch_id
+      return e.branch_id === selectedBranchId
+    })
+    return [...list].sort((a, b) =>
+      (a.employee_code || '').localeCompare(b.employee_code || '', undefined, { numeric: true, sensitivity: 'base' })
+    )
+  }, [employees, selectedBranchId])
+
   const counts = useMemo(
     () => countLiveAttendance(
-      employees.map((e) => e.id),
+      branchFilteredEmployees.map((e) => e.id),
       dailyByEmployee
     ),
-    [employees, dailyByEmployee]
+    [branchFilteredEmployees, dailyByEmployee]
   )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return employees.filter((e) => {
+    return branchFilteredEmployees.filter((e) => {
       const bucket = classifyLiveAttendance(dailyByEmployee.get(e.id))
       if (bucketFilter !== 'all' && bucket !== bucketFilter) return false
       if (!q) return true
@@ -155,7 +201,34 @@ export function LiveAttendancePage() {
         (e.branches?.name ?? '').toLowerCase().includes(q)
       )
     })
-  }, [employees, dailyByEmployee, bucketFilter, query])
+  }, [branchFilteredEmployees, dailyByEmployee, bucketFilter, query])
+
+  const groupedByBranch = useMemo(() => {
+    const groups: Record<string, typeof filtered> = {}
+    for (const e of filtered) {
+      const branchName = e.branches?.name || 'No Branch'
+      if (!groups[branchName]) {
+        groups[branchName] = []
+      }
+      groups[branchName].push(e)
+    }
+    const sortedBranchNames = Object.keys(groups).sort((a, b) => {
+      if (a === 'No Branch') return 1
+      if (b === 'No Branch') return -1
+      
+      const idxA = getBranchOrderIndex(a)
+      const idxB = getBranchOrderIndex(b)
+      
+      if (idxA !== idxB) {
+        return idxA - idxB
+      }
+      return a.localeCompare(b)
+    })
+    return sortedBranchNames.map((name) => ({
+      name,
+      employees: groups[name],
+    }))
+  }, [filtered])
 
   const footerBuckets: BucketFilter[] = ['all', 'in', 'out', 'break', 'leave', 'absent']
 
@@ -176,8 +249,8 @@ export function LiveAttendancePage() {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="relative flex-1 min-w-[200px] max-w-md">
+      <div className="flex flex-wrap items-center gap-3 mb-6">
+        <div className="relative flex-grow sm:flex-grow-0 min-w-[200px] max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             className="pl-9"
@@ -186,9 +259,25 @@ export function LiveAttendancePage() {
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
+
+        <div className="w-full sm:w-48">
+          <Select
+            value={selectedBranchId}
+            onChange={(e) => setSelectedBranchId(e.target.value)}
+          >
+            <option value="all">All Branches</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+            <option value="none">No Branch</option>
+          </Select>
+        </div>
+
         <div className="text-sm text-muted-foreground ml-auto flex flex-wrap items-center gap-3">
           <span>
-            Showing {filtered.length} of {employees.length}
+            Showing {filtered.length} of {branchFilteredEmployees.length}
           </span>
           {syncedAt && (
             <span className="flex items-center gap-1">
@@ -208,48 +297,77 @@ export function LiveAttendancePage() {
           No employees match this filter.
         </div>
       ) : (
-        <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] sm:grid-cols-[repeat(auto-fill,minmax(12.5rem,1fr))]">
-          {filtered.map((e) => {
-            const d = dailyByEmployee.get(e.id)
-            const displayStatus = getLiveDisplayStatus(d)
-            const timeLabel = fmtTime(d?.first_in)
+        <div className="space-y-8">
+          {groupedByBranch.map((group) => {
+            const isCollapsed = !!collapsedBranches[group.name]
             return (
-              <Link
-                key={e.id}
-                to={`/employees/${e.id}`}
-                className="rounded-xl border bg-card p-4 flex flex-col items-center text-center gap-2.5 hover:border-primary/40 hover:shadow-sm transition-all min-h-[11rem]"
-              >
-                <Avatar className={cn('h-14 w-14 text-base font-semibold shrink-0', avatarColorFor(e.full_name))}>
-                  {e.photo_url && <AvatarImage src={e.photo_url} alt={e.full_name} />}
-                  <AvatarFallback className="bg-transparent text-inherit">
-                    {initialsFromName(e.full_name)}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="w-full space-y-1">
-                  <div className="text-[11px] font-mono text-muted-foreground leading-none">{e.employee_code}</div>
-                  <div className="text-sm font-semibold leading-snug break-words hyphens-auto">
-                    {e.full_name}
-                  </div>
-                  <div className="flex items-start justify-center gap-1 text-[11px] text-muted-foreground pt-0.5 text-center">
-                    <MapPin className="h-3 w-3 shrink-0 mt-0.5" />
-                    <span className="break-words leading-snug">{e.branches?.name ?? 'No branch'}</span>
-                  </div>
-                </div>
-                <span
-                  className={cn(
-                    'text-[10px] uppercase tracking-wide font-semibold px-2.5 py-1 rounded',
-                    liveDisplayStatusClass[displayStatus]
-                  )}
+              <div key={group.name} className="space-y-4">
+                <button
+                  type="button"
+                  onClick={() => toggleBranchCollapse(group.name)}
+                  className="flex items-center gap-2 border-b pb-2 w-full text-left hover:text-primary transition-colors group font-semibold text-sm text-foreground uppercase tracking-wider"
                 >
-                  {displayStatus}
-                </span>
-                {timeLabel && (displayStatus === 'Present' || displayStatus === 'Late' || displayStatus === 'Half Day') && (
-                  <span className="text-xs font-semibold tabular-nums text-muted-foreground">
-                    In {timeLabel}
-                    {d?.last_out ? ` · Out ${fmtTime(d.last_out)}` : ''}
-                  </span>
+                  <MapPin className="h-4 w-4 text-orange-500 shrink-0 group-hover:scale-110 transition-transform" />
+                  <span className="flex-grow">{group.name}</span>
+                  <Badge variant="secondary" className="text-xs font-mono font-semibold mr-1">
+                    {group.employees.length}
+                  </Badge>
+                  <ChevronDown
+                    className={cn(
+                      'h-4 w-4 text-muted-foreground transition-transform duration-200',
+                      isCollapsed && '-rotate-90'
+                    )}
+                  />
+                </button>
+                {!isCollapsed && (
+                  <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] sm:grid-cols-[repeat(auto-fill,minmax(12.5rem,1fr))]">
+                    {group.employees.map((e) => {
+                      const d = dailyByEmployee.get(e.id)
+                      const displayStatus = getLiveDisplayStatus(d)
+                      const timeLabel = fmtTime(d?.first_in)
+                      return (
+                        <button
+                          key={e.id}
+                          type="button"
+                          onClick={() => navigate(`/attendance/live/${e.id}`)}
+                          className="rounded-xl border bg-card p-4 flex flex-col items-center text-center gap-2.5 hover:border-primary/40 hover:shadow-sm transition-all min-h-[11rem]"
+                        >
+                          <Avatar className={cn('h-14 w-14 text-base font-semibold shrink-0', avatarColorFor(e.full_name))}>
+                            {e.photo_url && <AvatarImage src={e.photo_url} alt={e.full_name} />}
+                            <AvatarFallback className="bg-transparent text-inherit">
+                              {initialsFromName(e.full_name)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="w-full space-y-1">
+                            <div className="text-[11px] font-mono text-muted-foreground leading-none">{e.employee_code}</div>
+                            <div className="text-sm font-semibold leading-snug break-words hyphens-auto">
+                              {e.full_name}
+                            </div>
+                            <div className="flex items-start justify-center gap-1 text-[11px] text-muted-foreground pt-0.5 text-center">
+                              <MapPin className="h-3 w-3 shrink-0 mt-0.5" />
+                              <span className="break-words leading-snug">{e.branches?.name ?? 'No branch'}</span>
+                            </div>
+                          </div>
+                          <span
+                            className={cn(
+                              'text-[10px] uppercase tracking-wide font-semibold px-2.5 py-1 rounded',
+                              liveDisplayStatusClass[displayStatus]
+                            )}
+                          >
+                            {displayStatus}
+                          </span>
+                          {timeLabel && (displayStatus === 'Present' || displayStatus === 'Late' || displayStatus === 'Half Day') && (
+                            <span className="text-xs font-semibold tabular-nums text-muted-foreground">
+                              In {timeLabel}
+                              {d?.last_out ? ` · Out ${fmtTime(d.last_out)}` : ''}
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
                 )}
-              </Link>
+              </div>
             )
           })}
         </div>

@@ -89,6 +89,7 @@ const emptyForm = {
   reports_to_id: '',
   device_pin: '',
   attendance_device_id: '',
+  shift_id: '',
   is_active: true,
   overtime_eligible: true,
 }
@@ -157,10 +158,12 @@ export function EmployeesPage() {
   const canUpdate = hasPermission('employee.update')
   const canDelete = hasPermission('employee.delete')
   const canSetSalary = hasPermission('payroll.salary') || hasPermission('payroll.config')
+  const canAssignShift = hasPermission('shift.assign')
   const [rows, setRows] = useState<Employee[]>([])
   const [branches, setBranches] = useState<Lookup[]>([])
   const [departments, setDepartments] = useState<Lookup[]>([])
   const [designations, setDesignations] = useState<Lookup[]>([])
+  const [shifts, setShifts] = useState<Lookup[]>([])
   const [managers, setManagers] = useState<Lookup[]>([])
   const [zktDevices, setZktDevices] = useState<ZktDevice[]>([])
   const [selectedDeviceCloud, setSelectedDeviceCloud] = useState<{
@@ -186,10 +189,11 @@ export function EmployeesPage() {
   const [importOpen, setImportOpen] = useState(false)
 
   async function loadLookups() {
-    const [b, d, des, emp, dev] = await Promise.all([
+    const [b, d, des, sh, emp, dev] = await Promise.all([
       supabase.from('branches').select('id, name').eq('is_active', true).order('name'),
       supabase.from('departments').select('id, name').eq('is_active', true).order('name'),
       supabase.from('designations').select('id, title').eq('is_active', true).order('title'),
+      supabase.from('shifts').select('id, code, name').eq('is_active', true).order('name'),
       supabase.from('employees').select('id, full_name, employee_code').eq('is_active', true).order('full_name'),
       supabase
         .from('attendance_devices')
@@ -201,6 +205,12 @@ export function EmployeesPage() {
     setBranches((b.data ?? []).map((x) => ({ id: x.id, name: x.name })))
     setDepartments((d.data ?? []).map((x) => ({ id: x.id, name: x.name })))
     setDesignations((des.data ?? []).map((x) => ({ id: x.id, title: x.title })))
+    setShifts(
+      (sh.data ?? []).map((x) => ({
+        id: x.id,
+        name: `${x.code} — ${x.name}`,
+      }))
+    )
     setManagers((emp.data ?? []).map((x) => ({ id: x.id, name: `${x.full_name} (${x.employee_code})` })))
     setZktDevices((dev.data ?? []) as ZktDevice[])
   }
@@ -342,7 +352,7 @@ export function EmployeesPage() {
     setComp(emptyComp)
     setStatutory(emptyStatutory)
 
-    const [{ data: full }, { data: sal }, { data: stat }] = await Promise.all([
+    const [{ data: full }, { data: sal }, { data: stat }, { data: shiftRow }] = await Promise.all([
       supabase
         .from('employees')
         .select('*, reports_to_id, gender, date_of_birth, date_of_joining')
@@ -359,6 +369,14 @@ export function EmployeesPage() {
         .from('employee_statutory_enrollment')
         .select('*')
         .eq('employee_id', e.id)
+        .order('effective_from', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from('employee_shift_assignments')
+        .select('shift_id')
+        .eq('employee_id', e.id)
+        .is('effective_to', null)
         .order('effective_from', { ascending: false })
         .limit(1)
         .maybeSingle(),
@@ -382,6 +400,7 @@ export function EmployeesPage() {
       reports_to_id: row.reports_to_id ? String(row.reports_to_id) : '',
       device_pin: row.device_pin != null ? String(row.device_pin) : '',
       attendance_device_id: '',
+      shift_id: shiftRow?.shift_id ? String(shiftRow.shift_id) : '',
       is_active: e.is_active,
       overtime_eligible: row.overtime_eligible !== false,
     })
@@ -436,6 +455,64 @@ export function EmployeesPage() {
     }
 
     setOpen(true)
+  }
+
+  const syncEmployeeShift = async (employeeId: string): Promise<boolean> => {
+    if (!canAssignShift || !form.shift_id) return true
+    const effectiveFrom = form.date_of_joining || today()
+    const { data: existing } = await supabase
+      .from('employee_shift_assignments')
+      .select('id, shift_id')
+      .eq('employee_id', employeeId)
+      .is('effective_to', null)
+      .order('effective_from', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (existing?.shift_id === form.shift_id) return true
+
+    if (existing?.id) {
+      const { error } = await supabase
+        .from('employee_shift_assignments')
+        .update({ shift_id: form.shift_id })
+        .eq('id', existing.id)
+      if (error) {
+        toast.error('Shift assignment failed', { description: error.message })
+        return false
+      }
+      await writeAuditLog({
+        action: 'UPDATE',
+        entityType: 'employee_shift_assignment',
+        entityId: existing.id,
+        after: { shift_id: form.shift_id },
+      })
+      return true
+    }
+
+    const payload = {
+      employee_id: employeeId,
+      shift_id: form.shift_id,
+      effective_from: effectiveFrom,
+      effective_to: null,
+      weekly_off: ['Sunday'],
+      notes: null,
+    }
+    const { data, error } = await supabase
+      .from('employee_shift_assignments')
+      .insert(payload)
+      .select('id')
+      .single()
+    if (error) {
+      toast.error('Shift assignment failed', { description: error.message })
+      return false
+    }
+    await writeAuditLog({
+      action: 'CREATE',
+      entityType: 'employee_shift_assignment',
+      entityId: data?.id,
+      after: payload,
+    })
+    return true
   }
 
   // STEP 1 — save profile
@@ -507,6 +584,8 @@ export function EmployeesPage() {
         )
         setBusy(false)
         await writeAuditLog({ action: 'UPDATE', entityType: 'employee', entityId: editing.id })
+        const shiftOk = await syncEmployeeShift(editing.id)
+        if (!shiftOk) return false
         if (mapResult.usedFallback) {
           toast.success('Profile saved — device + PIN linked', {
             description: 'Device PIN saved for ADMS attendance import.',
@@ -578,6 +657,8 @@ export function EmployeesPage() {
       }
       setBusy(false)
       await writeAuditLog({ action: 'CREATE', entityType: 'employee', entityId: data.id })
+      const shiftOk = await syncEmployeeShift(data.id)
+      if (!shiftOk) return false
       toast.success('Profile saved')
       setCreatedId(data.id)
       void loadLookups()
@@ -948,6 +1029,22 @@ export function EmployeesPage() {
                     ))}
                   </Select>
                 </RequiredField>
+
+                <RequiredField label="First name">
+                  <Input
+                    value={form.first_name}
+                    onChange={(e) => setForm({ ...form, first_name: e.target.value })}
+                    required
+                  />
+                </RequiredField>
+                <RequiredField label="Last name">
+                  <Input
+                    value={form.last_name}
+                    onChange={(e) => setForm({ ...form, last_name: e.target.value })}
+                    required
+                  />
+                </RequiredField>
+
                 <RequiredField label="Branch">
                   <Select
                     required
@@ -976,6 +1073,7 @@ export function EmployeesPage() {
                     ))}
                   </Select>
                 </RequiredField>
+
                 <RequiredField label="Designation">
                   <Select
                     required
@@ -998,20 +1096,7 @@ export function EmployeesPage() {
                     required
                   />
                 </RequiredField>
-                <RequiredField label="First name">
-                  <Input
-                    value={form.first_name}
-                    onChange={(e) => setForm({ ...form, first_name: e.target.value })}
-                    required
-                  />
-                </RequiredField>
-                <RequiredField label="Last name">
-                  <Input
-                    value={form.last_name}
-                    onChange={(e) => setForm({ ...form, last_name: e.target.value })}
-                    required
-                  />
-                </RequiredField>
+
                 <RequiredField label="CNIC">
                   <Input
                     value={form.cnic}
@@ -1027,7 +1112,8 @@ export function EmployeesPage() {
                     onChange={(e) => setForm({ ...form, phone: e.target.value })}
                   />
                 </div>
-                <div className="space-y-2 sm:col-span-2">
+
+                <div className="space-y-2">
                   <Label>Email</Label>
                   <Input
                     type="email"
@@ -1035,6 +1121,25 @@ export function EmployeesPage() {
                     onChange={(e) => setForm({ ...form, email: e.target.value })}
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label>Shift</Label>
+                  <Select
+                    value={form.shift_id}
+                    onChange={(e) => setForm({ ...form, shift_id: e.target.value })}
+                    disabled={!canAssignShift}
+                  >
+                    <option value="">Select shift…</option>
+                    {shifts.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                  {!canAssignShift && (
+                    <p className="text-xs text-muted-foreground">Ask an admin with shift assign permission.</p>
+                  )}
+                </div>
+
                 <div className="space-y-2">
                   <Label>Date of birth</Label>
                   <Input
@@ -1061,6 +1166,7 @@ export function EmployeesPage() {
                     employee in HRM.
                   </p>
                 </div>
+
                 <div className="space-y-2">
                   <Label>Device PIN (user ID on that machine)</Label>
                   <Input
@@ -1073,8 +1179,20 @@ export function EmployeesPage() {
                     disabled={!form.attendance_device_id}
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label>Reports to</Label>
+                  <Select value={form.reports_to_id} onChange={(e) => setForm({ ...form, reports_to_id: e.target.value })}>
+                    <option value="">None</option>
+                    {managers.filter((m) => m.id !== editing?.id).map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
                 {selectedDeviceCloud && (
-                  <div className="md:col-span-2 rounded-md border bg-muted/30 p-3 text-sm space-y-2">
+                  <div className="sm:col-span-2 rounded-md border bg-muted/30 p-3 text-sm space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">Cloud link — {selectedDeviceCloud.device.name}</span>
                       {(() => {
@@ -1106,17 +1224,6 @@ export function EmployeesPage() {
                     </Link>
                   </div>
                 )}
-                <div className="space-y-2">
-                  <Label>Reports to</Label>
-                  <Select value={form.reports_to_id} onChange={(e) => setForm({ ...form, reports_to_id: e.target.value })}>
-                    <option value="">None</option>
-                    {managers.filter((m) => m.id !== editing?.id).map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                 <label className="flex items-center gap-2 text-sm">

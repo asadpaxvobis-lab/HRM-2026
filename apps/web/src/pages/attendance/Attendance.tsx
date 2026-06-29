@@ -416,11 +416,14 @@ export function AttendancePage() {
   const punchEmployeeOptions = useMemo(() => {
     const q = punchEmpQuery.trim().toLowerCase()
     const filtered = q ? employees.filter((e) => employeeMatchesQuery(e, q)) : employees
-    if (punchForm.employee_id && !filtered.some((e) => e.id === punchForm.employee_id)) {
+    const sorted = [...filtered].sort((a, b) =>
+      (a.employee_code || '').localeCompare(b.employee_code || '', undefined, { numeric: true, sensitivity: 'base' })
+    )
+    if (punchForm.employee_id && !sorted.some((e) => e.id === punchForm.employee_id)) {
       const sel = employees.find((e) => e.id === punchForm.employee_id)
-      if (sel) return [sel, ...filtered]
+      if (sel) return [sel, ...sorted]
     }
-    return filtered
+    return sorted
   }, [employees, punchEmpQuery, punchForm.employee_id])
 
   const counts = useMemo(() => {

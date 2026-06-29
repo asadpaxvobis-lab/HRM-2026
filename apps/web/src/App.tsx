@@ -21,6 +21,7 @@ import { ShiftsPage } from '@/pages/master/Shifts'
 import { RosterPage } from '@/pages/master/Roster'
 import { AttendancePage } from '@/pages/attendance/Attendance'
 import { LiveAttendancePage } from '@/pages/attendance/LiveAttendance'
+import { LiveAttendanceEmployeePage } from '@/pages/attendance/LiveAttendanceEmployee'
 import { LateEmployeesPage } from '@/pages/attendance/LateEmployees'
 import { CorrectionsPage } from '@/pages/attendance/Corrections'
 import { MissingBiometricsPage } from '@/pages/attendance/MissingBiometrics'
@@ -187,6 +188,14 @@ export default function App() {
                 element={
                   <ProtectedRoute perm="shift.view">
                     <RosterPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="attendance/live/:employeeId"
+                element={
+                  <ProtectedRoute perm="attendance.view">
+                    <LiveAttendanceEmployeePage />
                   </ProtectedRoute>
                 }
               />

@@ -15,10 +15,7 @@ export type NavSection = {
 
 export const navSections: NavSection[] = [
   {
-    items: [
-      { label: 'Dashboard', to: '/' },
-      { label: 'Profile', to: '/profile' },
-    ],
+    items: [{ label: 'Dashboard', to: '/' }],
   },
   {
     heading: 'Masters',
@@ -104,6 +101,7 @@ export const navSections: NavSection[] = [
     heading: 'Administration',
     collapsible: true,
     items: [
+      { label: 'Profile', to: '/profile' },
       { label: 'Users', to: '/admin/users', perm: 'user.view' },
       { label: 'Roles & Permissions', to: '/admin/roles', perm: 'role.view' },
       { label: 'Devices', to: '/admin/devices', perm: 'attendance.view' },
