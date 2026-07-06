@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { AttendanceDonutChart } from '@/components/attendance/AttendanceDonutChart'
+import { AttendanceTimeline, type DailyAttendanceRow } from '@/components/attendance/AttendanceTimeline'
 import { avatarColorFor, cn, initialsFromName } from '@/lib/utils'
 import {
   computeAttendancePeriodStats,
@@ -45,6 +46,7 @@ export function LiveAttendanceEmployeePage() {
   const [loading, setLoading] = useState(true)
   const [monthlyStats, setMonthlyStats] = useState<AttendancePeriodStats>(emptyStats)
   const [annualStats, setAnnualStats] = useState<AttendancePeriodStats>(emptyStats)
+  const [dailyRows, setDailyRows] = useState<DailyAttendanceRow[]>([])
 
   const monthLabel = useMemo(
     () =>
@@ -71,7 +73,7 @@ export function LiveAttendanceEmployeePage() {
           .single(),
         supabase
           .from('attendance_daily')
-          .select('attendance_date, status, first_in, last_out, is_holiday, is_weekly_off')
+          .select('attendance_date, status, first_in, last_out, is_holiday, is_weekly_off, scheduled_start, scheduled_end, worked_minutes, late_minutes, early_out_minutes, overtime_minutes, shifts(code, name, start_time, end_time, grace_late_minutes, grace_early_minutes, is_night)')
           .eq('employee_id', employeeId)
           .gte('attendance_date', yearStart)
           .lte('attendance_date', todayIso),
@@ -92,14 +94,16 @@ export function LiveAttendanceEmployeePage() {
         branches: Array.isArray(b) ? (b[0] as { name: string }) : (b as { name: string } | null),
       })
 
-      const rows = (dailyRes.data ?? []) as {
-        attendance_date: string
-        status: string
-        first_in: string | null
-        last_out: string | null
-        is_holiday: boolean
-        is_weekly_off: boolean
-      }[]
+      const rawRows = dailyRes.data ?? []
+      const rows = rawRows.map((r: any) => {
+        const sh = r.shifts
+        return {
+          ...r,
+          shifts: Array.isArray(sh) ? sh[0] : sh ?? null,
+        }
+      }) as DailyAttendanceRow[]
+
+      setDailyRows(rows)
 
       const todayRow = rows.find((row) => row.attendance_date === todayIso)
       setTodayStatus(getLiveDisplayStatus(todayRow ?? null))
@@ -165,6 +169,8 @@ export function LiveAttendanceEmployeePage() {
               </div>
             </CardContent>
           </Card>
+
+          <AttendanceTimeline rows={dailyRows} />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>

@@ -359,9 +359,21 @@ export function resolveInOutFromPunches(
   const ins = sorted.filter((p) => punchRole(p, shift, tz) === 'in')
   const outs = sorted.filter((p) => punchRole(p, shift, tz) === 'out')
 
+  const first_in = ins.length ? ins[0].punch_at : null
+  let last_out = outs.length ? outs[outs.length - 1].punch_at : null
+
+  // Fallback: if no explicit OUT is classified, but we have multiple punches and a first_in,
+  // treat the latest punch that is after first_in as the last_out.
+  if (!last_out && first_in && sorted.length > 1) {
+    const lastPunch = sorted[sorted.length - 1].punch_at
+    if (lastPunch !== first_in) {
+      last_out = lastPunch
+    }
+  }
+
   return {
-    first_in: ins.length ? ins[0].punch_at : null,
-    last_out: outs.length ? outs[outs.length - 1].punch_at : null,
+    first_in,
+    last_out,
   }
 }
 
