@@ -398,6 +398,7 @@ export function computeAttendancePeriodStats(
     last_out?: string | null
     is_holiday?: boolean | null
     is_weekly_off?: boolean | null
+    late_minutes?: number | null
   }[]
 ): AttendancePeriodStats {
   let presentDays = 0
