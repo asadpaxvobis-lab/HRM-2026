@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { getLiveDisplayStatus } from './liveAttendance'
 
 /** Used when an employee has no shift assignment. */
 export const DEFAULT_SHIFT = {
@@ -389,7 +390,13 @@ export type AttendancePeriodStats = {
 
 /** Present / absent / leave share of working days (excludes holiday & weekly off). */
 export function computeAttendancePeriodStats(
-  rows: { status: string }[]
+  rows: {
+    status: string
+    first_in?: string | null
+    last_out?: string | null
+    is_holiday?: boolean | null
+    is_weekly_off?: boolean | null
+  }[]
 ): AttendancePeriodStats {
   let presentDays = 0
   let absentDays = 0
@@ -397,13 +404,13 @@ export function computeAttendancePeriodStats(
   let workingDays = 0
 
   for (const row of rows) {
-    const status = row.status
-    if (status === 'Holiday' || status === 'Weekly Off') continue
+    const displayStatus = getLiveDisplayStatus(row)
+    if (displayStatus === 'Holiday' || displayStatus === 'Weekly Off') continue
     workingDays += 1
-    if (status === 'Present' || status === 'Late') presentDays += 1
-    else if (status === 'Half Day') presentDays += 0.5
-    else if (status === 'Absent') absentDays += 1
-    else if (status === 'Leave') leaveDays += 1
+    if (displayStatus === 'Present' || displayStatus === 'Late') presentDays += 1
+    else if (displayStatus === 'Half Day') presentDays += 0.5
+    else if (displayStatus === 'Absent') absentDays += 1
+    else if (displayStatus === 'Leave') leaveDays += 1
   }
 
   const pct = (value: number) =>

@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { Clock, Calendar, CheckCircle2, AlertCircle, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getLiveDisplayStatus } from '@/lib/liveAttendance'
 
 export interface DailyAttendanceRow {
   attendance_date: string
@@ -383,9 +384,9 @@ export function AttendanceTimeline({ rows, limit = 7 }: AttendanceTimelineProps)
                     </div>
                     <Badge 
                       variant="outline" 
-                      className={cn("text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 border shrink-0", getStatusColor(row.status))}
+                      className={cn("text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 border shrink-0", getStatusColor(getLiveDisplayStatus(row)))}
                     >
-                      {row.status}
+                      {getLiveDisplayStatus(row)}
                     </Badge>
                   </div>
 
