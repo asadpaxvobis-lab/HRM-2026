@@ -117,6 +117,8 @@ export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday']
     const status = row.status
     const isSpecialDay = row.is_holiday || row.is_weekly_off || ['Leave', 'Holiday', 'Weekly Off', 'Absent'].includes(status)
     const hasPunches = !!row.first_in
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' })
+    const isToday = row.attendance_date === today
 
     // 1. If it's a non-working day, show a simple descriptive track
     if (isSpecialDay && !hasPunches) {
@@ -285,7 +287,7 @@ export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday']
               )}
               style={{ 
                 left: `${aInPct}%`, 
-                width: `${aOutPct !== null ? Math.max(1.5, aOutPct - aInPct) : (100 - aInPct)}%` 
+                width: `${aOutPct !== null ? Math.max(1.5, aOutPct - aInPct) : (isToday ? (100 - aInPct) : 0)}%` 
               }}
             />
           )}
