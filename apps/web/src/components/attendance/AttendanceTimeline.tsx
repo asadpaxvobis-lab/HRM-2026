@@ -401,78 +401,80 @@ export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday']
           </div>
         ) : (
           <div className="overflow-x-auto w-full pb-2">
-            <div className="divide-y divide-slate-100 dark:divide-slate-800 min-w-[850px] px-4 sm:px-0">
-              {recentRows.map((row) => (
-                <div 
-                  key={row.attendance_date} 
-                  className="py-4 first:pt-0 last:pb-0 flex flex-row items-center gap-6"
-                >
-                  {/* 1. Date & Status Info */}
-                  <div className="flex items-center gap-3 w-44 shrink-0">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                      <span className="text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200 truncate">
-                        {formatDateInPk(row.attendance_date)}
-                      </span>
-                    </div>
-                    <Badge 
-                      variant="outline" 
-                      className={cn("text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 border shrink-0", getStatusColor(getLiveDisplayStatus(row)))}
-                    >
-                      {getLiveDisplayStatus(row)}
-                    </Badge>
-                  </div>
-
-                  {/* 2. Timeline Bar Visualization */}
-                  <div className="flex-1 min-w-0">
-                    {renderTimelineBar(row)}
-                  </div>
-
-                  {/* 3. Daily Metrics Summary */}
-                  <div className="w-44 text-xs text-slate-600 dark:text-slate-400 shrink-0 text-right flex flex-col items-end justify-center gap-y-0.5 select-none">
-                    {row.first_in ? (
-                      <>
-                        <div className="flex items-center">
-                          <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
-                            {fmtMinutes(row.worked_minutes)}
-                          </span>
-                          <span className="text-muted-foreground font-light text-[10px] ml-1">worked</span>
-                        </div>
-                        
-                        <div className="flex flex-col items-end gap-y-0.5">
-                          {row.late_minutes > 0 && (
-                            <span className="text-red-600 dark:text-red-400 font-medium tracking-tight">
-                              +{fmtMinutes(row.late_minutes)} late
-                            </span>
-                          )}
-                          {row.early_out_minutes > 0 && (
-                            <span className="text-orange-600 dark:text-orange-400 font-medium tracking-tight">
-                              -{fmtMinutes(row.early_out_minutes)} early out
-                          </span>
-                        )}
-                        {row.overtime_minutes > 0 && (
-                          <span className="text-sky-600 dark:text-sky-400 font-semibold tracking-tight">
-                            +{fmtMinutes(row.overtime_minutes)} OT
-                          </span>
-                        )}
-                        {row.late_minutes === 0 && row.early_out_minutes === 0 && (
-                          <span className="text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1 text-[10px]">
-                            <CheckCircle2 className="h-3 w-3" />
-                            On Time
-                          </span>
-                        )}
+            <div className="max-h-[380px] overflow-y-auto min-w-[850px] pr-2">
+              <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                {recentRows.map((row) => (
+                  <div 
+                    key={row.attendance_date} 
+                    className="py-4 first:pt-0 last:pb-0 flex flex-row items-center gap-6"
+                  >
+                    {/* 1. Date & Status Info */}
+                    <div className="flex items-center gap-3 w-44 shrink-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200 truncate">
+                          {formatDateInPk(row.attendance_date)}
+                        </span>
                       </div>
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground italic text-[11px]">No active work session</span>
-                  )}
-                </div>
+                      <Badge 
+                        variant="outline" 
+                        className={cn("text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 border shrink-0", getStatusColor(getLiveDisplayStatus(row)))}
+                      >
+                        {getLiveDisplayStatus(row)}
+                      </Badge>
+                    </div>
+
+                    {/* 2. Timeline Bar Visualization */}
+                    <div className="flex-1 min-w-0">
+                      {renderTimelineBar(row)}
+                    </div>
+
+                    {/* 3. Daily Metrics Summary */}
+                    <div className="w-44 text-xs text-slate-600 dark:text-slate-400 shrink-0 text-right flex flex-col items-end justify-center gap-y-0.5 select-none">
+                      {row.first_in ? (
+                        <>
+                          <div className="flex items-center">
+                            <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                              {fmtMinutes(row.worked_minutes)}
+                            </span>
+                            <span className="text-muted-foreground font-light text-[10px] ml-1">worked</span>
+                          </div>
+                          
+                          <div className="flex flex-col items-end gap-y-0.5">
+                            {row.late_minutes > 0 && (
+                              <span className="text-red-600 dark:text-red-400 font-medium tracking-tight">
+                                +{fmtMinutes(row.late_minutes)} late
+                              </span>
+                            )}
+                            {row.early_out_minutes > 0 && (
+                              <span className="text-orange-600 dark:text-orange-400 font-medium tracking-tight">
+                                -{fmtMinutes(row.early_out_minutes)} early out
+                              </span>
+                            )}
+                            {row.overtime_minutes > 0 && (
+                              <span className="text-sky-600 dark:text-sky-400 font-semibold tracking-tight">
+                                +{fmtMinutes(row.overtime_minutes)} OT
+                              </span>
+                            )}
+                            {row.late_minutes === 0 && row.early_out_minutes === 0 && (
+                              <span className="text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1 text-[10px]">
+                                <CheckCircle2 className="h-3 w-3" />
+                                On Time
+                              </span>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground italic text-[11px]">No active work session</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </div>
-        </div>
-      )}
-    </CardContent>
+        )}
+      </CardContent>
     </Card>
   )
 }
