@@ -72,12 +72,38 @@ function fmtMinutes(mins: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
+function getRecentDatesInPk(limit: number): string[] {
+  const dates: string[] = []
+  const now = new Date()
+  for (let i = 0; i < limit; i++) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000)
+    const dateStr = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' })
+    dates.push(dateStr)
+  }
+  return dates
+}
+
 export function AttendanceTimeline({ rows, limit = 7 }: AttendanceTimelineProps) {
-  // Sort rows descending (newest first) and take the specified limit
   const recentRows = useMemo(() => {
-    return [...rows]
-      .sort((a, b) => b.attendance_date.localeCompare(a.attendance_date))
-      .slice(0, limit)
+    const dates = getRecentDatesInPk(limit)
+    return dates.map((dateStr) => {
+      const existing = rows.find((r) => r.attendance_date === dateStr)
+      if (existing) return existing
+      return {
+        attendance_date: dateStr,
+        status: 'Absent',
+        first_in: null,
+        last_out: null,
+        is_holiday: false,
+        is_weekly_off: false,
+        worked_minutes: 0,
+        late_minutes: 0,
+        early_out_minutes: 0,
+        overtime_minutes: 0,
+        scheduled_start: null,
+        scheduled_end: null,
+      }
+    })
   }, [rows, limit])
 
   const renderTimelineBar = (row: DailyAttendanceRow) => {
