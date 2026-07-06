@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { toast } from 'sonner'
 import { downloadCsv } from '@/lib/csv'
 import { FilterBar, ReportBackLink, monthOptions, printableStyles } from './shared'
+import { getLiveDisplayStatus } from '@/lib/liveAttendance'
 
 type Employee = {
   id: string
@@ -22,6 +23,8 @@ type Daily = {
   employee_id: string
   attendance_date: string
   status: string | null
+  first_in: string | null
+  last_out: string | null
   is_weekly_off: boolean | null
   is_holiday: boolean | null
   worked_minutes: number | null
@@ -33,16 +36,27 @@ const DOW_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'] as const
 
 const codeFor = (d: Daily | undefined): { code: string; cls: string; title: string } => {
   if (!d) return { code: '·', cls: 'text-slate-300', title: 'No record' }
-  if (d.is_holiday) return { code: 'H', cls: 'bg-orange-100 text-orange-700', title: 'Holiday' }
-  if (d.is_weekly_off) return { code: 'W', cls: 'bg-slate-200 text-slate-700', title: 'Weekly off' }
-  const s = (d.status ?? '').toUpperCase()
-  if (s.includes('PRESENT')) return { code: 'P', cls: 'bg-green-100 text-green-700', title: 'Present' }
-  if (s.includes('LEAVE')) return { code: 'L', cls: 'bg-blue-100 text-blue-700', title: 'Leave' }
-  if (s.includes('ABSENT')) return { code: 'A', cls: 'bg-red-100 text-red-700', title: 'Absent' }
-  if (s.includes('LATE')) return { code: 'LT', cls: 'bg-yellow-100 text-yellow-800', title: 'Late' }
-  if (s.includes('HALF')) return { code: 'HD', cls: 'bg-amber-100 text-amber-800', title: 'Half day' }
-  if (d.worked_minutes && d.worked_minutes > 0) return { code: 'P', cls: 'bg-green-100 text-green-700', title: 'Present' }
-  return { code: '·', cls: 'text-slate-300', title: s || 'No record' }
+  
+  const displayStatus = getLiveDisplayStatus(d)
+  
+  switch (displayStatus) {
+    case 'Holiday':
+      return { code: 'H', cls: 'bg-orange-100 text-orange-700', title: 'Holiday' }
+    case 'Weekly Off':
+      return { code: 'W', cls: 'bg-slate-200 text-slate-700', title: 'Weekly off' }
+    case 'Present':
+      return { code: 'P', cls: 'bg-green-100 text-green-700', title: 'Present' }
+    case 'Leave':
+      return { code: 'L', cls: 'bg-blue-100 text-blue-700', title: 'Leave' }
+    case 'Absent':
+      return { code: 'A', cls: 'bg-red-100 text-red-700', title: 'Absent' }
+    case 'Late':
+      return { code: 'LT', cls: 'bg-yellow-100 text-yellow-800', title: 'Late' }
+    case 'Half Day':
+      return { code: 'HD', cls: 'bg-amber-100 text-amber-800', title: 'Half day' }
+    default:
+      return { code: '·', cls: 'text-slate-300', title: 'No record' }
+  }
 }
 
 export function MusterRollPage() {
@@ -71,7 +85,7 @@ export function MusterRollPage() {
         .order('full_name'),
       supabase
         .from('attendance_daily')
-        .select('employee_id, attendance_date, status, is_weekly_off, is_holiday, worked_minutes, late_minutes, overtime_minutes')
+        .select('employee_id, attendance_date, status, first_in, last_out, is_weekly_off, is_holiday, worked_minutes, late_minutes, overtime_minutes')
         .gte('attendance_date', first)
         .lte('attendance_date', last),
     ])
