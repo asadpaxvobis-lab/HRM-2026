@@ -88,7 +88,7 @@ export function LiveAttendancePage() {
         .order('employee_code'),
       supabase
         .from('attendance_daily')
-        .select('employee_id, status, first_in, last_out, is_holiday, is_weekly_off')
+        .select('employee_id, attendance_date, status, first_in, last_out, is_holiday, is_weekly_off')
         .eq('attendance_date', todayIso),
       supabase
         .from('attendance_punches')
@@ -138,6 +138,7 @@ export function LiveAttendancePage() {
         ...(existing ?? { status: 'Absent', is_holiday: false, is_weekly_off: false }),
         first_in: resolved.first_in ?? existing?.first_in ?? null,
         last_out: resolved.last_out ?? existing?.last_out ?? null,
+        attendance_date: todayIso,
       })
     }
 
@@ -356,7 +357,7 @@ export function LiveAttendancePage() {
                           >
                             {displayStatus}
                           </span>
-                          {timeLabel && (displayStatus === 'Present' || displayStatus === 'Late' || displayStatus === 'Half Day') && (
+                          {timeLabel && (
                             <span className="text-xs font-semibold tabular-nums text-muted-foreground">
                               In {timeLabel}
                               {d?.last_out ? ` · Out ${fmtTime(d.last_out)}` : ''}
