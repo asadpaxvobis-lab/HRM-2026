@@ -77,7 +77,7 @@ export function Sidebar() {
         className="px-5 pt-5 pb-3 block hover:opacity-80 transition-opacity"
         aria-label="Go to dashboard"
       >
-        <h1 className="text-xl font-bold tracking-tight">HRM ERP 2026</h1>
+        <img src="/logo.png" alt="Logo" className="h-10 w-auto object-contain" />
       </NavLink>
 
       {/* Quick add */}

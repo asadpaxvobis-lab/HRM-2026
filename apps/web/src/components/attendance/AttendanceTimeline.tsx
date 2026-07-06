@@ -366,54 +366,54 @@ export function AttendanceTimeline({ rows, limit = 7 }: AttendanceTimelineProps)
             No recent attendance records found.
           </div>
         ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {recentRows.map((row) => (
-              <div 
-                key={row.attendance_date} 
-                className="py-4 first:pt-0 last:pb-0 flex flex-col md:flex-row md:items-center gap-4 md:gap-6"
-              >
-                {/* 1. Date & Status Info */}
-                <div className="flex items-center justify-between md:justify-start gap-4 w-full md:w-56 shrink-0 px-4 sm:px-0">
-                  <div className="flex items-center gap-2">
-                    <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span className="text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200">
-                      {formatDateInPk(row.attendance_date)}
-                    </span>
+          <div className="overflow-x-auto w-full pb-2">
+            <div className="divide-y divide-slate-100 dark:divide-slate-800 min-w-[850px] px-4 sm:px-0">
+              {recentRows.map((row) => (
+                <div 
+                  key={row.attendance_date} 
+                  className="py-4 first:pt-0 last:pb-0 flex flex-row items-center gap-6"
+                >
+                  {/* 1. Date & Status Info */}
+                  <div className="flex items-center gap-3 w-44 shrink-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="text-sm font-semibold tracking-tight text-slate-800 dark:text-slate-200 truncate">
+                        {formatDateInPk(row.attendance_date)}
+                      </span>
+                    </div>
+                    <Badge 
+                      variant="outline" 
+                      className={cn("text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 border shrink-0", getStatusColor(row.status))}
+                    >
+                      {row.status}
+                    </Badge>
                   </div>
-                  <Badge 
-                    variant="outline" 
-                    className={cn("text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 border shrink-0", getStatusColor(row.status))}
-                  >
-                    {row.status}
-                  </Badge>
-                </div>
 
-                {/* 2. Timeline Bar Visualization */}
-                <div className="flex-1 w-full px-8 md:px-0">
-                  {renderTimelineBar(row)}
-                </div>
+                  {/* 2. Timeline Bar Visualization */}
+                  <div className="flex-1 min-w-0">
+                    {renderTimelineBar(row)}
+                  </div>
 
-                {/* 3. Daily Metrics Summary */}
-                <div className="w-full md:w-56 text-xs text-slate-600 dark:text-slate-400 shrink-0 md:text-right border-t md:border-t-0 border-slate-100 dark:border-slate-800 pt-2.5 md:pt-0 flex flex-wrap md:flex-col items-center md:items-end justify-between md:justify-center gap-x-4 gap-y-1 px-4 sm:px-0 select-none">
-                  {row.first_in ? (
-                    <>
-                      <div className="flex items-center gap-1.5 md:gap-0">
-                        <span className="md:hidden text-muted-foreground">Worked: </span>
-                        <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
-                          {fmtMinutes(row.worked_minutes)}
-                        </span>
-                        <span className="text-muted-foreground font-light text-[10px] ml-1">worked</span>
-                      </div>
-                      
-                      <div className="flex flex-wrap md:flex-col items-center md:items-end gap-x-3 gap-y-0.5">
-                        {row.late_minutes > 0 && (
-                          <span className="text-red-600 dark:text-red-400 font-medium tracking-tight">
-                            +{fmtMinutes(row.late_minutes)} late
+                  {/* 3. Daily Metrics Summary */}
+                  <div className="w-44 text-xs text-slate-600 dark:text-slate-400 shrink-0 text-right flex flex-col items-end justify-center gap-y-0.5 select-none">
+                    {row.first_in ? (
+                      <>
+                        <div className="flex items-center">
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                            {fmtMinutes(row.worked_minutes)}
                           </span>
-                        )}
-                        {row.early_out_minutes > 0 && (
-                          <span className="text-orange-600 dark:text-orange-400 font-medium tracking-tight">
-                            -{fmtMinutes(row.early_out_minutes)} early out
+                          <span className="text-muted-foreground font-light text-[10px] ml-1">worked</span>
+                        </div>
+                        
+                        <div className="flex flex-col items-end gap-y-0.5">
+                          {row.late_minutes > 0 && (
+                            <span className="text-red-600 dark:text-red-400 font-medium tracking-tight">
+                              +{fmtMinutes(row.late_minutes)} late
+                            </span>
+                          )}
+                          {row.early_out_minutes > 0 && (
+                            <span className="text-orange-600 dark:text-orange-400 font-medium tracking-tight">
+                              -{fmtMinutes(row.early_out_minutes)} early out
                           </span>
                         )}
                         {row.overtime_minutes > 0 && (
@@ -436,8 +436,9 @@ export function AttendanceTimeline({ rows, limit = 7 }: AttendanceTimelineProps)
               </div>
             ))}
           </div>
-        )}
-      </CardContent>
+        </div>
+      )}
+    </CardContent>
     </Card>
   )
 }

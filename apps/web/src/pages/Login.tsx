@@ -37,13 +37,7 @@ export function LoginPage() {
         <div className="w-full max-w-sm space-y-8">
           <div className="space-y-2">
             <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-xl bg-primary text-primary-foreground grid place-items-center font-bold">
-                H
-              </div>
-              <div>
-                <div className="text-base font-semibold leading-tight">HRM ERP</div>
-                <div className="text-xs text-muted-foreground">Industry 4.0</div>
-              </div>
+              <img src="/logo.png" alt="Logo" className="h-36 w-auto object-contain" />
             </div>
             <h1 className="text-2xl font-semibold tracking-tight pt-4">Sign in to your account</h1>
             <p className="text-sm text-muted-foreground">
