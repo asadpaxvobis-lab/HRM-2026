@@ -48,6 +48,7 @@ export function LiveAttendanceEmployeePage() {
   const [loading, setLoading] = useState(true)
   const [monthlyStats, setMonthlyStats] = useState<AttendancePeriodStats>(emptyStats)
   const [annualStats, setAnnualStats] = useState<AttendancePeriodStats>(emptyStats)
+  const [weeklyOffDays, setWeeklyOffDays] = useState<string[]>(['Sunday'])
   const [dailyRows, setDailyRows] = useState<DailyAttendanceRow[]>([])
 
   const monthLabel = useMemo(
@@ -67,7 +68,7 @@ export function LiveAttendanceEmployeePage() {
       const yearStart = yearStartIso(todayIso)
       const monthStart = monthStartIso(todayIso)
 
-      const [empRes, dailyRes] = await Promise.all([
+      const [empRes, dailyRes, shiftRes] = await Promise.all([
         supabase
           .from('employees')
           .select('id, employee_code, full_name, photo_url, branches(name)')
@@ -79,6 +80,10 @@ export function LiveAttendanceEmployeePage() {
           .eq('employee_id', employeeId)
           .gte('attendance_date', yearStart)
           .lte('attendance_date', todayIso),
+        supabase
+          .from('employee_shift_assignments')
+          .select('weekly_off, effective_from, effective_to')
+          .eq('employee_id', employeeId),
       ])
 
       if (empRes.error || !empRes.data) {
@@ -106,6 +111,19 @@ export function LiveAttendanceEmployeePage() {
       }) as DailyAttendanceRow[]
 
       setDailyRows(rows)
+
+      const assignments = shiftRes.data ?? []
+      const activeAssignment = assignments
+        .filter((a: any) => {
+          const from = a.effective_from
+          const to = a.effective_to
+          return from <= todayIso && (!to || to >= todayIso)
+        })
+        .sort((a: any, b: any) => b.effective_from.localeCompare(a.effective_from))[0]
+
+      if (activeAssignment?.weekly_off) {
+        setWeeklyOffDays(activeAssignment.weekly_off)
+      }
 
       const todayRow = rows.find((row) => row.attendance_date === todayIso)
       setTodayStatus(getLiveDisplayStatus(todayRow ?? null))
@@ -172,7 +190,7 @@ export function LiveAttendanceEmployeePage() {
             </CardContent>
           </Card>
 
-          <AttendanceTimeline rows={dailyRows} />
+          <AttendanceTimeline rows={dailyRows} weeklyOffDays={weeklyOffDays} />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>

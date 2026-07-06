@@ -32,6 +32,7 @@ export interface DailyAttendanceRow {
 interface AttendanceTimelineProps {
   rows: DailyAttendanceRow[]
   limit?: number
+  weeklyOffDays?: string[]
 }
 
 function formatTimeInPk(iso: string | null | undefined): string {
@@ -83,19 +84,25 @@ function getRecentDatesInPk(limit: number): string[] {
   return dates
 }
 
-export function AttendanceTimeline({ rows, limit = 7 }: AttendanceTimelineProps) {
+export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday'] }: AttendanceTimelineProps) {
   const recentRows = useMemo(() => {
     const dates = getRecentDatesInPk(limit)
     return dates.map((dateStr) => {
       const existing = rows.find((r) => r.attendance_date === dateStr)
       if (existing) return existing
+
+      const [y, m, d] = dateStr.split('-').map(Number)
+      const date = new Date(Date.UTC(y, m - 1, d))
+      const weekday = date.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
+      const isWeeklyOff = weeklyOffDays.includes(weekday)
+
       return {
         attendance_date: dateStr,
-        status: 'Absent',
+        status: isWeeklyOff ? 'Weekly Off' : 'Absent',
         first_in: null,
         last_out: null,
         is_holiday: false,
-        is_weekly_off: false,
+        is_weekly_off: isWeeklyOff,
         worked_minutes: 0,
         late_minutes: 0,
         early_out_minutes: 0,
@@ -104,7 +111,7 @@ export function AttendanceTimeline({ rows, limit = 7 }: AttendanceTimelineProps)
         scheduled_end: null,
       }
     })
-  }, [rows, limit])
+  }, [rows, limit, weeklyOffDays])
 
   const renderTimelineBar = (row: DailyAttendanceRow) => {
     const status = row.status
