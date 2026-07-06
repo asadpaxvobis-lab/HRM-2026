@@ -386,6 +386,8 @@ export type AttendancePeriodStats = {
   presentPct: number
   absentPct: number
   leavePct: number
+  lateDays: number
+  latePct: number
 }
 
 /** Present / absent / leave share of working days (excludes holiday & weekly off). */
@@ -402,15 +404,24 @@ export function computeAttendancePeriodStats(
   let absentDays = 0
   let leaveDays = 0
   let workingDays = 0
+  let lateDays = 0
 
   for (const row of rows) {
     const displayStatus = getLiveDisplayStatus(row)
     if (displayStatus === 'Holiday' || displayStatus === 'Weekly Off') continue
     workingDays += 1
-    if (displayStatus === 'Present' || displayStatus === 'Late') presentDays += 1
-    else if (displayStatus === 'Half Day') presentDays += 0.5
-    else if (displayStatus === 'Absent') absentDays += 1
-    else if (displayStatus === 'Leave') leaveDays += 1
+    if (displayStatus === 'Present') {
+      presentDays += 1
+    } else if (displayStatus === 'Late') {
+      presentDays += 1
+      lateDays += 1
+    } else if (displayStatus === 'Half Day') {
+      presentDays += 0.5
+    } else if (displayStatus === 'Absent') {
+      absentDays += 1
+    } else if (displayStatus === 'Leave') {
+      leaveDays += 1
+    }
   }
 
   const pct = (value: number) =>
@@ -424,6 +435,8 @@ export function computeAttendancePeriodStats(
     presentPct: pct(presentDays),
     absentPct: pct(absentDays),
     leavePct: pct(leaveDays),
+    lateDays,
+    latePct: pct(lateDays),
   }
 }
 

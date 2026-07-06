@@ -81,6 +81,23 @@ export function AttendanceDonutChart({
             </div>
           )
         })}
+
+        {stats.lateDays !== undefined && (
+          <div className="flex items-center gap-3 pt-2.5 border-t border-slate-100 dark:border-slate-800">
+            <span className="h-3 w-3 rounded-full shrink-0 bg-amber-500" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <span className="font-medium text-amber-800 dark:text-amber-300">Late Arrivals</span>
+                <span className="font-semibold tabular-nums text-amber-700 dark:text-amber-500">
+                  {stats.latePct}%
+                </span>
+              </div>
+              <div className="text-xs text-muted-foreground tabular-nums">
+                {stats.lateDays} day{stats.lateDays === 1 ? '' : 's'}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

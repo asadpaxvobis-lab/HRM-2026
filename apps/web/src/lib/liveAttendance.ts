@@ -6,6 +6,7 @@ export type LiveAttendanceDaily = {
   last_out?: string | null
   is_holiday?: boolean | null
   is_weekly_off?: boolean | null
+  attendance_date?: string | null
 }
 
 export type LiveAttendanceCounts = {
@@ -45,9 +46,21 @@ export function getLiveDisplayStatus(d?: LiveAttendanceDaily | null): LiveDispla
   if (d.is_holiday || status === 'Holiday') return 'Holiday'
   if (d.is_weekly_off || status === 'Weekly Off') return 'Weekly Off'
   if (status === 'Half Day') return 'Half Day'
-  if (d.first_in) return status === 'Late' ? 'Late' : 'Present'
-  if (status === 'Late' || status === 'Present') return status as 'Late' | 'Present'
-  return 'Absent'
+
+  // If this is a record for today, and they have checked in, display them as Present/Late
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' })
+  const isToday = d.attendance_date === today
+
+  if (isToday && d.first_in) {
+    return status === 'Late' ? 'Late' : 'Present'
+  }
+
+  // Otherwise (for past days or if they haven't checked in today), trust the status or fallback to Absent
+  if (status === 'Present') return 'Present'
+  if (status === 'Late') return 'Late'
+  if (status === 'Absent') return 'Absent'
+
+  return d.first_in ? 'Present' : 'Absent'
 }
 
 /** Classify today's attendance for live board (in / out / leave / absent / break). */

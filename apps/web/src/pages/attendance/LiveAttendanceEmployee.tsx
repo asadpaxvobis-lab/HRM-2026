@@ -27,6 +27,8 @@ const emptyStats = (): AttendancePeriodStats => ({
   presentPct: 0,
   absentPct: 0,
   leavePct: 0,
+  lateDays: 0,
+  latePct: 0,
 })
 
 type Employee = {
