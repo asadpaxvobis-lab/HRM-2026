@@ -31,6 +31,55 @@ const emptyStats = (): AttendancePeriodStats => ({
   latePct: 0,
 })
 
+function getDatesInRange(startIso: string, endIso: string): string[] {
+  const dates: string[] = []
+  const start = new Date(startIso + 'T12:00:00')
+  const end = new Date(endIso + 'T12:00:00')
+
+  const current = new Date(start)
+  while (current <= end) {
+    const y = current.getFullYear()
+    const m = String(current.getMonth() + 1).padStart(2, '0')
+    const d = String(current.getDate()).padStart(2, '0')
+    dates.push(`${y}-${m}-${d}`)
+    current.setDate(current.getDate() + 1)
+  }
+  return dates
+}
+
+function fillMissingDays(
+  existingRows: DailyAttendanceRow[],
+  startIso: string,
+  endIso: string,
+  weeklyOffDays: string[]
+): DailyAttendanceRow[] {
+  const dates = getDatesInRange(startIso, endIso)
+  return dates.map((dateStr) => {
+    const existing = existingRows.find((r) => r.attendance_date === dateStr)
+    if (existing) return existing
+
+    const [y, m, d] = dateStr.split('-').map(Number)
+    const date = new Date(Date.UTC(y, m - 1, d))
+    const weekday = date.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
+    const isWeeklyOff = weeklyOffDays.includes(weekday)
+
+    return {
+      attendance_date: dateStr,
+      status: isWeeklyOff ? 'Weekly Off' : 'Absent',
+      first_in: null,
+      last_out: null,
+      is_holiday: false,
+      is_weekly_off: isWeeklyOff,
+      worked_minutes: 0,
+      late_minutes: 0,
+      early_out_minutes: 0,
+      overtime_minutes: 0,
+      scheduled_start: null,
+      scheduled_end: null,
+    } as DailyAttendanceRow
+  })
+}
+
 type Employee = {
   id: string
   employee_code: string
@@ -128,10 +177,12 @@ export function LiveAttendanceEmployeePage() {
       const todayRow = rows.find((row) => row.attendance_date === todayIso)
       setTodayStatus(getLiveDisplayStatus(todayRow ?? null))
 
-      setMonthlyStats(
-        computeAttendancePeriodStats(rows.filter((row) => row.attendance_date >= monthStart))
-      )
-      setAnnualStats(computeAttendancePeriodStats(rows))
+      const activeWeeklyOff = activeAssignment?.weekly_off ?? ['Sunday']
+      const fullMonthRows = fillMissingDays(rows, monthStart, todayIso, activeWeeklyOff)
+      const fullYearRows = fillMissingDays(rows, yearStart, todayIso, activeWeeklyOff)
+
+      setMonthlyStats(computeAttendancePeriodStats(fullMonthRows))
+      setAnnualStats(computeAttendancePeriodStats(fullYearRows))
       setLoading(false)
     })()
   }, [employeeId, navigate, todayIso])
