@@ -188,6 +188,9 @@ export function EmployeesPage() {
   const [existingPhotoUrl, setExistingPhotoUrl] = useState<string | null>(null)
   const [importOpen, setImportOpen] = useState(false)
 
+  const selectedDevice = zktDevices.find((d) => d.id === form.attendance_device_id)
+  const isOfficeDevice = !!selectedDevice?.name.toLowerCase().includes('office')
+
   async function loadLookups() {
     const [b, d, des, sh, emp, dev] = await Promise.all([
       supabase.from('branches').select('id, name').eq('is_active', true).order('name'),
@@ -542,7 +545,7 @@ export function EmployeesPage() {
       reports_to_id: form.reports_to_id || null,
       device_pin: form.device_pin.trim() ? parseInt(form.device_pin, 10) : null,
       is_active: form.is_active,
-      overtime_eligible: form.overtime_eligible,
+      overtime_eligible: isOfficeDevice ? false : form.overtime_eligible,
     }
 
     if (editing) {
@@ -1152,7 +1155,16 @@ export function EmployeesPage() {
                   <Label>ZKTeco device (machine)</Label>
                   <Select
                     value={form.attendance_device_id}
-                    onChange={(e) => setForm({ ...form, attendance_device_id: e.target.value })}
+                    onChange={(e) => {
+                      const devId = e.target.value
+                      const devObj = zktDevices.find((d) => d.id === devId)
+                      const isOff = !!devObj?.name.toLowerCase().includes('office')
+                      setForm({
+                        ...form,
+                        attendance_device_id: devId,
+                        overtime_eligible: isOff ? false : form.overtime_eligible
+                      })
+                    }}
                   >
                     <option value="">— Not on biometric device —</option>
                     {zktDevices.map((d) => (
@@ -1230,19 +1242,21 @@ export function EmployeesPage() {
                   <Checkbox checked={form.is_active} onCheckedChange={(v) => setForm({ ...form, is_active: !!v })} />
                   Active
                 </label>
-                <label className="flex items-start gap-2 text-sm">
-                  <Checkbox
-                    checked={form.overtime_eligible}
-                    onCheckedChange={(v) => setForm({ ...form, overtime_eligible: !!v })}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    <span className="font-medium">Eligible for overtime</span>
-                    <span className="block text-xs text-muted-foreground">
-                      If unchecked, automatic overtime from attendance will not be created for this employee.
+                {!isOfficeDevice && (
+                  <label className="flex items-start gap-2 text-sm">
+                    <Checkbox
+                      checked={form.overtime_eligible}
+                      onCheckedChange={(v) => setForm({ ...form, overtime_eligible: !!v })}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="font-medium">Eligible for overtime</span>
+                      <span className="block text-xs text-muted-foreground">
+                        If unchecked, automatic overtime from attendance will not be created for this employee.
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+                )}
               </div>
             </form>
           )}

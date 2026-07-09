@@ -15,6 +15,8 @@ import {
   todayInCompanyTz,
   yearStartIso,
   type AttendancePeriodStats,
+  resolveInOutFromPunches,
+  computeAttendanceMetrics,
 } from '@/lib/attendance'
 import { getLiveDisplayStatus, liveDisplayStatusClass, type LiveDisplayStatus } from '@/lib/liveAttendance'
 import { toast } from 'sonner'
@@ -117,7 +119,7 @@ export function LiveAttendanceEmployeePage() {
       const yearStart = yearStartIso(todayIso)
       const monthStart = monthStartIso(todayIso)
 
-      const [empRes, dailyRes, shiftRes] = await Promise.all([
+      const [empRes, dailyRes, shiftRes, punchesRes] = await Promise.all([
         supabase
           .from('employees')
           .select('id, employee_code, full_name, photo_url, branches(name)')
@@ -133,6 +135,12 @@ export function LiveAttendanceEmployeePage() {
           .from('employee_shift_assignments')
           .select('weekly_off, effective_from, effective_to')
           .eq('employee_id', employeeId),
+        supabase
+          .from('attendance_punches')
+          .select('punch_at, punch_type')
+          .eq('employee_id', employeeId)
+          .gte('punch_at', `${yearStart}T00:00:00+05:00`)
+          .lte('punch_at', `${todayIso}T23:59:59+05:00`),
       ])
 
       if (empRes.error || !empRes.data) {
@@ -150,12 +158,63 @@ export function LiveAttendanceEmployeePage() {
         branches: Array.isArray(b) ? (b[0] as { name: string }) : (b as { name: string } | null),
       })
 
+      const punchesByDate = new Map<string, { punch_at: string; punch_type: string }[]>()
+      for (const p of punchesRes.data ?? []) {
+        const localDate = new Date(p.punch_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' })
+        const list = punchesByDate.get(localDate) ?? []
+        list.push(p)
+        punchesByDate.set(localDate, list)
+      }
+
       const rawRows = dailyRes.data ?? []
       const rows = rawRows.map((r: any) => {
         const sh = r.shifts
+        const shiftObj = Array.isArray(sh) ? sh[0] : sh ?? null
+        const dayPunches = punchesByDate.get(r.attendance_date)
+
+        let first_in = r.first_in
+        let last_out = r.last_out
+        let status = r.status
+        let worked_minutes = r.worked_minutes
+        let late_minutes = r.late_minutes
+        let early_out_minutes = r.early_out_minutes
+        let overtime_minutes = r.overtime_minutes
+
+        if (dayPunches?.length) {
+          const resolved = resolveInOutFromPunches(dayPunches, { shift: shiftObj })
+          first_in = resolved.first_in ?? first_in
+          last_out = resolved.last_out ?? last_out
+
+          if (first_in) {
+            const m = computeAttendanceMetrics(
+              r.attendance_date,
+              first_in,
+              last_out,
+              shiftObj,
+              r.scheduled_start,
+              r.scheduled_end
+            )
+            worked_minutes = m.worked_minutes
+            late_minutes = m.late_minutes
+            early_out_minutes = m.early_out_minutes
+            overtime_minutes = m.overtime_minutes
+
+            if (['Absent', 'Present', 'Late'].includes(status)) {
+              status = late_minutes > 0 ? 'Late' : 'Present'
+            }
+          }
+        }
+
         return {
           ...r,
-          shifts: Array.isArray(sh) ? sh[0] : sh ?? null,
+          shifts: shiftObj,
+          first_in,
+          last_out,
+          status,
+          worked_minutes,
+          late_minutes,
+          early_out_minutes,
+          overtime_minutes,
         }
       }) as DailyAttendanceRow[]
 

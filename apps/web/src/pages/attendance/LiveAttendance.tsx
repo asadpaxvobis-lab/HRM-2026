@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, ChevronDown, Loader2, MapPin, RefreshCw, Search } from 'lucide-react'
+import { Activity, Briefcase, ChevronDown, Loader2, MapPin, RefreshCw, Search } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { PageHeader } from '@/components/master/PageHeader'
@@ -32,6 +32,8 @@ type Employee = {
   photo_url: string | null
   branch_id?: string | null
   branches: { name: string } | null
+  department_id?: string | null
+  departments: { name: string } | null
 }
 
 type BucketFilter = LiveAttendanceBucket | 'all'
@@ -58,32 +60,55 @@ const getBranchOrderIndex = (name: string) => {
   return idx === -1 ? 999 : idx
 }
 
+const DEPT_SORT_ORDER = [
+  'c-suite',
+  'designs dept',
+  'online dept',
+  'accounts dep',
+  'admin'
+]
+
+const getDeptOrderIndex = (name: string) => {
+  const normalized = name.toLowerCase().trim()
+  const idx = DEPT_SORT_ORDER.indexOf(normalized)
+  if (idx !== -1) return idx
+  if (normalized.includes('c-suite')) return 0
+  if (normalized.includes('design')) return 1
+  if (normalized.includes('online')) return 2
+  if (normalized.includes('account')) return 3
+  if (normalized.includes('admin')) return 4
+  return 999
+}
+
 export function LiveAttendancePage() {
   const navigate = useNavigate()
   const todayIso = useMemo(() => todayInCompanyTz(), [])
   const [employees, setEmployees] = useState<Employee[]>([])
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([])
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([])
   const [selectedBranchId, setSelectedBranchId] = useState<string>('all')
+  const [selectedDeptId, setSelectedDeptId] = useState<string>('all')
+  const [groupBy, setGroupBy] = useState<'branch' | 'department'>('department')
   const [dailyByEmployee, setDailyByEmployee] = useState<Map<string, LiveAttendanceDaily>>(new Map())
   const [loading, setLoading] = useState(true)
   const [syncedAt, setSyncedAt] = useState<Date | null>(null)
   const [query, setQuery] = useState('')
   const [bucketFilter, setBucketFilter] = useState<BucketFilter>('all')
-  const [collapsedBranches, setCollapsedBranches] = useState<Record<string, boolean>>({})
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
 
-  const toggleBranchCollapse = (branchName: string) => {
-    setCollapsedBranches((prev) => ({
+  const toggleGroupCollapse = (groupName: string) => {
+    setCollapsedGroups((prev) => ({
       ...prev,
-      [branchName]: !prev[branchName],
+      [groupName]: !prev[groupName],
     }))
   }
 
   async function load() {
     setLoading(true)
-    const [{ data: emps }, { data: daily }, { data: punches }, { data: branchRows }] = await Promise.all([
+    const [{ data: emps }, { data: daily }, { data: punches }, { data: branchRows }, { data: deptRows }] = await Promise.all([
       supabase
         .from('employees')
-        .select('id, employee_code, full_name, photo_url, branch_id, branches(name)')
+        .select('id, employee_code, full_name, photo_url, branch_id, department_id, branches(name), departments(name)')
         .eq('is_active', true)
         .order('employee_code'),
       supabase
@@ -100,11 +125,17 @@ export function LiveAttendancePage() {
         .select('id, name')
         .eq('is_active', true)
         .order('name'),
+      supabase
+        .from('departments')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('name'),
     ])
 
     setEmployees(
       (emps ?? []).map((r: Record<string, unknown>) => {
         const b = r.branches
+        const d = r.departments
         return {
           id: r.id as string,
           employee_code: r.employee_code as string,
@@ -112,11 +143,14 @@ export function LiveAttendancePage() {
           photo_url: (r.photo_url as string | null) ?? null,
           branch_id: r.branch_id as string | null,
           branches: Array.isArray(b) ? (b[0] as { name: string }) : (b as { name: string } | null),
+          department_id: r.department_id as string | null,
+          departments: Array.isArray(d) ? (d[0] as { name: string }) : (d as { name: string } | null),
         }
       })
     )
 
     setBranches((branchRows ?? []) as { id: string; name: string }[])
+    setDepartments((deptRows ?? []) as { id: string; name: string }[])
 
     const map = new Map<string, LiveAttendanceDaily>()
     for (const row of daily ?? []) {
@@ -171,65 +205,99 @@ export function LiveAttendancePage() {
     }
   }, [todayIso])
 
-  const branchFilteredEmployees = useMemo(() => {
+  const baseFilteredEmployees = useMemo(() => {
     const list = employees.filter((e) => {
-      if (selectedBranchId === 'all') return true
-      if (selectedBranchId === 'none') return !e.branch_id
-      return e.branch_id === selectedBranchId
+      if (selectedBranchId !== 'all') {
+        if (selectedBranchId === 'none' && e.branch_id) return false
+        if (selectedBranchId !== 'none' && e.branch_id !== selectedBranchId) return false
+      }
+      if (selectedDeptId !== 'all') {
+        if (selectedDeptId === 'none' && e.department_id) return false
+        if (selectedDeptId !== 'none' && e.department_id !== selectedDeptId) return false
+      }
+      return true
     })
     return [...list].sort((a, b) =>
       (a.employee_code || '').localeCompare(b.employee_code || '', undefined, { numeric: true, sensitivity: 'base' })
     )
-  }, [employees, selectedBranchId])
+  }, [employees, selectedBranchId, selectedDeptId])
 
   const counts = useMemo(
     () => countLiveAttendance(
-      branchFilteredEmployees.map((e) => e.id),
+      baseFilteredEmployees.map((e) => e.id),
       dailyByEmployee
     ),
-    [branchFilteredEmployees, dailyByEmployee]
+    [baseFilteredEmployees, dailyByEmployee]
   )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return branchFilteredEmployees.filter((e) => {
+    return baseFilteredEmployees.filter((e) => {
       const bucket = classifyLiveAttendance(dailyByEmployee.get(e.id))
       if (bucketFilter !== 'all' && bucket !== bucketFilter) return false
       if (!q) return true
       return (
         e.full_name.toLowerCase().includes(q) ||
         e.employee_code.toLowerCase().includes(q) ||
-        (e.branches?.name ?? '').toLowerCase().includes(q)
+        (e.branches?.name ?? '').toLowerCase().includes(q) ||
+        (e.departments?.name ?? '').toLowerCase().includes(q)
       )
     })
-  }, [branchFilteredEmployees, dailyByEmployee, bucketFilter, query])
+  }, [baseFilteredEmployees, dailyByEmployee, bucketFilter, query])
 
-  const groupedByBranch = useMemo(() => {
-    const groups: Record<string, typeof filtered> = {}
-    for (const e of filtered) {
-      const branchName = e.branches?.name || 'No Branch'
-      if (!groups[branchName]) {
-        groups[branchName] = []
+  const groupedData = useMemo(() => {
+    if (groupBy === 'branch') {
+      const groups: Record<string, typeof filtered> = {}
+      for (const e of filtered) {
+        const branchName = e.branches?.name || 'No Branch'
+        if (!groups[branchName]) {
+          groups[branchName] = []
+        }
+        groups[branchName].push(e)
       }
-      groups[branchName].push(e)
+      const sortedBranchNames = Object.keys(groups).sort((a, b) => {
+        if (a === 'No Branch') return 1
+        if (b === 'No Branch') return -1
+        
+        const idxA = getBranchOrderIndex(a)
+        const idxB = getBranchOrderIndex(b)
+        
+        if (idxA !== idxB) {
+          return idxA - idxB
+        }
+        return a.localeCompare(b)
+      })
+      return sortedBranchNames.map((name) => ({
+        name,
+        employees: groups[name],
+      }))
+    } else {
+      const groups: Record<string, typeof filtered> = {}
+      for (const e of filtered) {
+        const deptName = e.departments?.name || 'No Department'
+        if (!groups[deptName]) {
+          groups[deptName] = []
+        }
+        groups[deptName].push(e)
+      }
+      const sortedDeptNames = Object.keys(groups).sort((a, b) => {
+        if (a === 'No Department') return 1
+        if (b === 'No Department') return -1
+        
+        const idxA = getDeptOrderIndex(a)
+        const idxB = getDeptOrderIndex(b)
+        
+        if (idxA !== idxB) {
+          return idxA - idxB
+        }
+        return a.localeCompare(b)
+      })
+      return sortedDeptNames.map((name) => ({
+        name,
+        employees: groups[name],
+      }))
     }
-    const sortedBranchNames = Object.keys(groups).sort((a, b) => {
-      if (a === 'No Branch') return 1
-      if (b === 'No Branch') return -1
-      
-      const idxA = getBranchOrderIndex(a)
-      const idxB = getBranchOrderIndex(b)
-      
-      if (idxA !== idxB) {
-        return idxA - idxB
-      }
-      return a.localeCompare(b)
-    })
-    return sortedBranchNames.map((name) => ({
-      name,
-      employees: groups[name],
-    }))
-  }, [filtered])
+  }, [filtered, groupBy])
 
   const footerBuckets: BucketFilter[] = ['all', 'in', 'out', 'break', 'leave', 'absent']
 
@@ -276,9 +344,51 @@ export function LiveAttendancePage() {
           </Select>
         </div>
 
+        <div className="w-full sm:w-48">
+          <Select
+            value={selectedDeptId}
+            onChange={(e) => setSelectedDeptId(e.target.value)}
+          >
+            <option value="all">All Departments</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+            <option value="none">No Department</option>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-1 bg-muted p-1 rounded-lg text-xs font-medium border border-border">
+          <button
+            type="button"
+            onClick={() => setGroupBy('branch')}
+            className={cn(
+              'px-3 py-1.5 rounded-md transition-all',
+              groupBy === 'branch'
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Branch wise
+          </button>
+          <button
+            type="button"
+            onClick={() => setGroupBy('department')}
+            className={cn(
+              'px-3 py-1.5 rounded-md transition-all',
+              groupBy === 'department'
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Department wise
+          </button>
+        </div>
+
         <div className="text-sm text-muted-foreground ml-auto flex flex-wrap items-center gap-3">
           <span>
-            Showing {filtered.length} of {branchFilteredEmployees.length}
+            Showing {filtered.length} of {baseFilteredEmployees.length}
           </span>
           {syncedAt && (
             <span className="flex items-center gap-1">
@@ -299,16 +409,20 @@ export function LiveAttendancePage() {
         </div>
       ) : (
         <div className="space-y-8">
-          {groupedByBranch.map((group) => {
-            const isCollapsed = !!collapsedBranches[group.name]
+          {groupedData.map((group) => {
+            const isCollapsed = !!collapsedGroups[group.name]
             return (
               <div key={group.name} className="space-y-4">
                 <button
                   type="button"
-                  onClick={() => toggleBranchCollapse(group.name)}
+                  onClick={() => toggleGroupCollapse(group.name)}
                   className="flex items-center gap-2 border-b pb-2 w-full text-left hover:text-primary transition-colors group font-semibold text-sm text-foreground uppercase tracking-wider"
                 >
-                  <MapPin className="h-4 w-4 text-orange-500 shrink-0 group-hover:scale-110 transition-transform" />
+                  {groupBy === 'branch' ? (
+                    <MapPin className="h-4 w-4 text-orange-500 shrink-0 group-hover:scale-110 transition-transform" />
+                  ) : (
+                    <Briefcase className="h-4 w-4 text-indigo-500 shrink-0 group-hover:scale-110 transition-transform" />
+                  )}
                   <span className="flex-grow">{group.name}</span>
                   <Badge variant="secondary" className="text-xs font-mono font-semibold mr-1">
                     {group.employees.length}
@@ -344,9 +458,15 @@ export function LiveAttendancePage() {
                             <div className="text-sm font-semibold leading-snug break-words hyphens-auto">
                               {e.full_name}
                             </div>
-                            <div className="flex items-start justify-center gap-1 text-[11px] text-muted-foreground pt-0.5 text-center">
-                              <MapPin className="h-3 w-3 shrink-0 mt-0.5" />
-                              <span className="break-words leading-snug">{e.branches?.name ?? 'No branch'}</span>
+                            <div className="flex flex-col items-center gap-0.5 text-[10px] text-muted-foreground pt-1.5">
+                              <div className="flex items-center gap-1 justify-center">
+                                <MapPin className="h-3 w-3 shrink-0" />
+                                <span className="break-words leading-none">{e.branches?.name ?? 'No branch'}</span>
+                              </div>
+                              <div className="flex items-center gap-1 justify-center">
+                                <Briefcase className="h-3 w-3 shrink-0" />
+                                <span className="break-words leading-none">{e.departments?.name ?? 'No dept'}</span>
+                              </div>
                             </div>
                           </div>
                           <span
