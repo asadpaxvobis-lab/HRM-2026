@@ -127,7 +127,7 @@ export function LiveAttendanceEmployeePage() {
           .single(),
         supabase
           .from('attendance_daily')
-          .select('attendance_date, status, first_in, last_out, is_holiday, is_weekly_off, scheduled_start, scheduled_end, worked_minutes, late_minutes, early_out_minutes, overtime_minutes, shifts(code, name, start_time, end_time, grace_late_minutes, grace_early_minutes, is_night)')
+          .select('attendance_date, status, first_in, last_out, is_holiday, is_weekly_off, scheduled_start, scheduled_end, worked_minutes, late_minutes, early_out_minutes, overtime_minutes, shifts(code, name, start_time, end_time, break_minutes, grace_late_minutes, grace_early_minutes, is_night)')
           .eq('employee_id', employeeId)
           .gte('attendance_date', yearStart)
           .lte('attendance_date', todayIso),
@@ -199,8 +199,28 @@ export function LiveAttendanceEmployeePage() {
             early_out_minutes = m.early_out_minutes
             overtime_minutes = m.overtime_minutes
 
-            if (['Absent', 'Present', 'Late'].includes(status)) {
-              status = late_minutes > 0 ? 'Late' : 'Present'
+            if (['Absent', 'Present', 'Late', 'Half Day'].includes(status)) {
+              const isCurrentDay = r.attendance_date === todayIso
+
+              // Compute dynamic threshold based on shift (mirrors DB logic)
+              let presentThreshold = 240 // default when no shift assigned
+              if (shiftObj?.start_time && shiftObj?.end_time) {
+                const [sh, sm] = (shiftObj.start_time as string).slice(0, 5).split(':').map(Number)
+                const [eh, em] = (shiftObj.end_time as string).slice(0, 5).split(':').map(Number)
+                let expectedWork = (eh * 60 + em) - (sh * 60 + sm) - (shiftObj.break_minutes ?? 0)
+                if (expectedWork <= 0) expectedWork += 24 * 60 // night shift
+                presentThreshold = Math.min(expectedWork, Math.max(180, Math.floor(expectedWork * 0.8)))
+              }
+
+              if (worked_minutes >= presentThreshold) {
+                status = late_minutes > 0 ? 'Late' : 'Present'
+              } else if (worked_minutes > 0) {
+                status = 'Half Day'
+              } else if (isCurrentDay && first_in && !last_out) {
+                // Today and still at work (no checkout yet)
+                status = late_minutes > 0 ? 'Late' : 'Present'
+              }
+              // Otherwise keep database status (Absent) for past days with check-in only
             }
           }
         }

@@ -23,6 +23,7 @@ export interface DailyAttendanceRow {
     name: string
     start_time?: string
     end_time?: string
+    break_minutes?: number
     grace_late_minutes?: number
     grace_early_minutes?: number
     is_night?: boolean
@@ -84,9 +85,16 @@ function getRecentDatesInPk(limit: number): string[] {
   return dates
 }
 
-export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday'] }: AttendanceTimelineProps) {
+export function AttendanceTimeline({ rows, limit, weeklyOffDays = ['Sunday'] }: AttendanceTimelineProps) {
+  // Default: show entire current month to date
+  const effectiveLimit = useMemo(() => {
+    if (limit) return limit
+    const now = new Date()
+    const dayOfMonth = parseInt(now.toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' }).split('-')[2], 10)
+    return dayOfMonth
+  }, [limit])
   const recentRows = useMemo(() => {
-    const dates = getRecentDatesInPk(limit)
+    const dates = getRecentDatesInPk(effectiveLimit)
     return dates.map((dateStr) => {
       const existing = rows.find((r) => r.attendance_date === dateStr)
       if (existing) return existing
@@ -111,7 +119,7 @@ export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday']
         scheduled_end: null,
       }
     })
-  }, [rows, limit, weeklyOffDays])
+  }, [rows, effectiveLimit, weeklyOffDays])
 
   const renderTimelineBar = (row: DailyAttendanceRow) => {
     const status = row.status
@@ -434,6 +442,7 @@ export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday']
                     {/* 3. Daily Metrics Summary */}
                     <div className="w-44 text-xs text-slate-600 dark:text-slate-400 shrink-0 text-right flex flex-col items-end justify-center gap-y-0.5 select-none">
                       {row.first_in ? (
+                        row.last_out || row.worked_minutes > 0 ? (
                         <>
                           <div className="flex items-center">
                             <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
@@ -466,6 +475,15 @@ export function AttendanceTimeline({ rows, limit = 7, weeklyOffDays = ['Sunday']
                             )}
                           </div>
                         </>
+                        ) : (
+                        <div className="flex flex-col items-end gap-y-1">
+                          <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                            <HelpCircle className="h-3 w-3" />
+                            <span className="font-medium text-[11px]">Checked in only</span>
+                          </div>
+                          <span className="text-muted-foreground text-[10px]">No checkout recorded</span>
+                        </div>
+                        )
                       ) : (
                         <span className="text-muted-foreground italic text-[11px]">No active work session</span>
                       )}

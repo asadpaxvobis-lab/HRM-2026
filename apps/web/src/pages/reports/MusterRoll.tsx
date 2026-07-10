@@ -82,7 +82,7 @@ export function MusterRollPage() {
         .from('employees')
         .select('id, employee_code, full_name, branches(name), departments(name)')
         .eq('is_active', true)
-        .order('full_name'),
+        .order('employee_code'),
       supabase
         .from('attendance_daily')
         .select('employee_id, attendance_date, status, first_in, last_out, is_weekly_off, is_holiday, worked_minutes, late_minutes, overtime_minutes')
@@ -124,7 +124,9 @@ export function MusterRollPage() {
             (!branchFilter || e.branches?.name === branchFilter) &&
             (!deptFilter || e.departments?.name === deptFilter)
         )
-        .sort((a, b) => a.full_name.localeCompare(b.full_name)),
+        .sort((a, b) =>
+          (a.employee_code || '').localeCompare(b.employee_code || '', undefined, { numeric: true, sensitivity: 'base' })
+        ),
     [employees, branchFilter, deptFilter]
   )
 

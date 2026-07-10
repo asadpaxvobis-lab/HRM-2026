@@ -684,15 +684,22 @@ BEGIN
   v_worked := v_metrics.worked_minutes;
   v_late := v_metrics.late_minutes;
 
+  IF v_shift_id IS NOT NULL THEN
+    v_expected_worked := (EXTRACT(EPOCH FROM (v_metrics.scheduled_end - v_metrics.scheduled_start)) / 60)::integer - v_break_minutes;
+    v_present_threshold := LEAST(v_expected_worked, GREATEST(180, (v_expected_worked * 0.8)::integer));
+  ELSE
+    v_present_threshold := 240;
+  END IF;
+
   IF v_is_holiday THEN
     v_status := 'Holiday';
   ELSIF v_is_weekly_off THEN
     v_status := 'Weekly Off';
   ELSIF v_punch_count = 0 THEN
     v_status := 'Absent';
-  ELSIF v_worked >= (CASE WHEN v_shift_id IS NOT NULL THEN 360 ELSE 240 END) AND v_late > 0 THEN
+  ELSIF v_worked >= v_present_threshold AND v_late > 0 THEN
     v_status := 'Late';
-  ELSIF v_worked >= (CASE WHEN v_shift_id IS NOT NULL THEN 360 ELSE 240 END) THEN
+  ELSIF v_worked >= v_present_threshold THEN
     v_status := 'Present';
   ELSIF v_worked > 0 THEN
     v_status := 'Half Day';
@@ -1650,6 +1657,8 @@ DECLARE
   v_status text;
   v_worked integer;
   v_late integer;
+  v_expected_worked integer;
+  v_present_threshold integer;
 BEGIN
   SELECT e.company_id, COALESCE(c.timezone, 'Asia/Karachi')
   INTO v_company_id, v_company_tz

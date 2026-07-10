@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
 import { PageHeader } from '@/components/master/PageHeader'
 import { HasPermission } from '@/components/HasPermission'
+import { EmployeeSearchSelect } from '@/components/master/EmployeeSearchSelect'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -328,12 +329,11 @@ export function LeavePage() {
                   <HasPermission perm="leave.approve">
                     <div className="space-y-2">
                       <Label>Employee</Label>
-                      <Select value={form.employee_id} onChange={(e) => setForm({ ...form, employee_id: e.target.value })}>
-                        <option value="">Select employee</option>
-                        {employees.map((e) => (
-                          <option key={e.id} value={e.id}>{e.employee_code} — {e.full_name}</option>
-                        ))}
-                      </Select>
+                      <EmployeeSearchSelect
+                        employees={employees}
+                        value={form.employee_id}
+                        onChange={(employeeId) => setForm({ ...form, employee_id: employeeId })}
+                      />
                     </div>
                   </HasPermission>
                   <div className="space-y-2">

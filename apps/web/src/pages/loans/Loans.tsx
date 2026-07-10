@@ -18,6 +18,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
 import { PageHeader } from '@/components/master/PageHeader'
 import { HasPermission } from '@/components/HasPermission'
+import { EmployeeSearchSelect } from '@/components/master/EmployeeSearchSelect'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -477,18 +478,12 @@ export function LoansPage() {
               {giveMode && (
                 <div className="space-y-2 sm:col-span-2">
                   <Label>Employee</Label>
-                  <Select
-                    required
+                  <EmployeeSearchSelect
+                    employees={employees}
                     value={form.employee_id}
-                    onChange={(e) => setForm({ ...form, employee_id: e.target.value })}
-                  >
-                    <option value="">Select employee…</option>
-                    {employees.map((emp) => (
-                      <option key={emp.id} value={emp.id}>
-                        {emp.employee_code} — {emp.full_name}
-                      </option>
-                    ))}
-                  </Select>
+                    onChange={(employeeId) => setForm({ ...form, employee_id: employeeId })}
+                    placeholder="Select employee…"
+                  />
                 </div>
               )}
               <div className="space-y-2 sm:col-span-2">

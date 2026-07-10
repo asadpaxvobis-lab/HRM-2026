@@ -1,10 +1,10 @@
--- Fix last_out resolution fallback when all punches are imported as check-ins (status = 0) from ZKTeco.
--- If no explicit OUT punch is classified, but there are multiple punches, treat the last punch of the day as the OUT punch.
+-- Devices sometimes mislabel the evening checkout punch as 'in' (seen from 6 Jul 2026 on ZKTeco).
+-- classify_punch_role trusts the device label, so no 'out' is found and the day computes as Absent
+-- even though the employee worked a full day. Add the same fallback the web app already uses:
+-- if there is a first_in but no classified out, take the latest punch of the day that is at
+-- least 60 minutes after first_in as the checkout.
 
-CREATE OR REPLACE FUNCTION public.recompute_attendance_for_employee(
-  p_employee_id uuid,
-  p_date date
-)
+CREATE OR REPLACE FUNCTION public.recompute_attendance_for_employee(p_employee_id uuid, p_date date)
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -31,8 +31,6 @@ DECLARE
   v_status text;
   v_worked integer;
   v_late integer;
-  v_expected_worked integer;
-  v_present_threshold integer;
 BEGIN
   SELECT e.company_id, COALESCE(c.timezone, 'Asia/Karachi')
   INTO v_company_id, v_company_tz
@@ -101,16 +99,26 @@ BEGIN
       p.punch_at, p.punch_type, v_shift_start, v_shift_end, v_is_night, v_company_tz
     ) = 'out';
 
-  -- FALLBACK: If no explicit OUT punch is classified, but we have multiple punches and a first_in,
-  -- treat the latest punch that is after first_in as the last_out.
-  IF v_last_out IS NULL AND v_first_in IS NOT NULL THEN
+  -- Fallback for mislabeled device punches: no classified 'out', but a later punch exists
+  IF v_first_in IS NOT NULL AND v_last_out IS NULL THEN
     SELECT MAX(p.punch_at)
     INTO v_last_out
     FROM public.attendance_punches p
     WHERE p.employee_id = p_employee_id
       AND p.company_id = v_company_id
       AND (p.punch_at AT TIME ZONE v_company_tz)::date = p_date
-      AND p.punch_at > v_first_in;
+      AND p.punch_at >= v_first_in + interval '60 minutes';
+  END IF;
+
+  -- Mirror fallback: only 'out'-labeled punches exist, take the earliest as check-in
+  IF v_first_in IS NULL AND v_last_out IS NOT NULL THEN
+    SELECT MIN(p.punch_at)
+    INTO v_first_in
+    FROM public.attendance_punches p
+    WHERE p.employee_id = p_employee_id
+      AND p.company_id = v_company_id
+      AND (p.punch_at AT TIME ZONE v_company_tz)::date = p_date
+      AND p.punch_at <= v_last_out - interval '60 minutes';
   END IF;
 
   SELECT * INTO v_metrics FROM public.compute_attendance_metrics(
@@ -131,22 +139,15 @@ BEGIN
   v_worked := v_metrics.worked_minutes;
   v_late := v_metrics.late_minutes;
 
-  IF v_shift_id IS NOT NULL THEN
-    v_expected_worked := (EXTRACT(EPOCH FROM (v_metrics.scheduled_end - v_metrics.scheduled_start)) / 60)::integer - v_break_minutes;
-    v_present_threshold := LEAST(v_expected_worked, GREATEST(180, (v_expected_worked * 0.8)::integer));
-  ELSE
-    v_present_threshold := 240;
-  END IF;
-
   IF v_is_holiday THEN
     v_status := 'Holiday';
   ELSIF v_is_weekly_off THEN
     v_status := 'Weekly Off';
   ELSIF v_punch_count = 0 THEN
     v_status := 'Absent';
-  ELSIF v_worked >= v_present_threshold AND v_late > 0 THEN
+  ELSIF v_worked >= (CASE WHEN v_shift_id IS NOT NULL THEN 360 ELSE 240 END) AND v_late > 0 THEN
     v_status := 'Late';
-  ELSIF v_worked >= v_present_threshold THEN
+  ELSIF v_worked >= (CASE WHEN v_shift_id IS NOT NULL THEN 360 ELSE 240 END) THEN
     v_status := 'Present';
   ELSIF v_worked > 0 THEN
     v_status := 'Half Day';
