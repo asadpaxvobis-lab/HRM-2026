@@ -42,6 +42,14 @@ const reports: Report[] = [
     tone: 'blue',
   },
   {
+    label: 'Employee with salary',
+    description: 'All active employees with pay frequency, basic salary, and all allowance breakdowns.',
+    to: '/reports/employee-salary',
+    icon: Users,
+    perm: 'payroll.view',
+    tone: 'blue',
+  },
+  {
     label: 'Monthly attendance',
     description: 'Monthly attendance grid (P / A / L / H / W) per employee per day — filter by one person.',
     to: '/reports/muster',

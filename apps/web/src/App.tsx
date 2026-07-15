@@ -53,6 +53,7 @@ import { LetterTemplatesPage } from '@/pages/letters/Templates'
 import { LetterDetailPage } from '@/pages/letters/LetterDetail'
 import { ReportsHubPage } from '@/pages/reports/ReportsHub'
 import { DirectoryReportPage } from '@/pages/reports/Directory'
+import { SalaryDirectoryReportPage } from '@/pages/reports/SalaryDirectory'
 import { MusterRollPage } from '@/pages/reports/MusterRoll'
 import { SalaryRegisterPage } from '@/pages/reports/SalaryRegister'
 import { BankDisbursementPage } from '@/pages/reports/BankDisbursement'
@@ -455,6 +456,14 @@ export default function App() {
                 element={
                   <ProtectedRoute perm="employee.view">
                     <DirectoryReportPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="reports/employee-salary"
+                element={
+                  <ProtectedRoute perm="payroll.view">
+                    <SalaryDirectoryReportPage />
                   </ProtectedRoute>
                 }
               />
