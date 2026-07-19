@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Plus, Pencil, RefreshCw, Loader2, Users, Search, ChevronRight, ArrowLeft, ArrowRight, Check, Camera, X, Trash2, Save, FileSpreadsheet } from 'lucide-react'
+import { Plus, Pencil, RefreshCw, Loader2, Users, Search, ChevronRight, ArrowLeft, ArrowRight, Check, Camera, X, Trash2, Save, FileSpreadsheet, Download } from 'lucide-react'
 import { useNavigate, Link } from 'react-router-dom'
+import * as XLSX from 'xlsx'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { writeAuditLog } from '@/lib/audit'
@@ -187,10 +188,105 @@ export function EmployeesPage() {
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
   const [existingPhotoUrl, setExistingPhotoUrl] = useState<string | null>(null)
   const [importOpen, setImportOpen] = useState(false)
-
+  const [exporting, setExporting] = useState(false)
+ 
   const selectedDevice = zktDevices.find((d) => d.id === form.attendance_device_id)
   const isOfficeDevice = !!selectedDevice?.name.toLowerCase().includes('office')
 
+  const handleExportExcel = async () => {
+    setExporting(true)
+    try {
+      const { data: emps, error } = await supabase
+        .from('employees')
+        .select(`
+          id, employee_code, first_name, last_name, full_name, email, phone, cnic, employment_status, is_active, overtime_eligible, date_of_joining, date_of_birth, gender, device_pin,
+          branches(name), departments(name), designations(title),
+          employee_salary_history(basic, house_rent, medical, conveyance, utilities, other_allowances, pay_frequency, currency, effective_from)
+        `)
+        .order('employee_code')
+
+      if (error) {
+        toast.error('Failed to load employee data for export', { description: error.message })
+        return
+      }
+
+      if (!emps || emps.length === 0) {
+        toast.error('No employees found to export')
+        return
+      }
+
+      const exportData = emps.map((e: any) => {
+        const branchName = e.branches?.name || 'No Branch'
+        const deptName = e.departments?.name || 'No Department'
+        const desgTitle = e.designations?.title || 'No Designation'
+
+        const salaries = e.employee_salary_history || []
+        const latestSalary = salaries.length > 0
+          ? [...salaries].sort((a: any, b: any) => b.effective_from.localeCompare(a.effective_from))[0]
+          : null
+
+        const basic = latestSalary ? parseFloat(latestSalary.basic) : 0
+        const hr = latestSalary ? parseFloat(latestSalary.house_rent) : 0
+        const med = latestSalary ? parseFloat(latestSalary.medical) : 0
+        const conv = latestSalary ? parseFloat(latestSalary.conveyance) : 0
+        const util = latestSalary ? parseFloat(latestSalary.utilities) : 0
+        const oth = latestSalary ? parseFloat(latestSalary.other_allowances) : 0
+        const gross = basic + hr + med + conv + util + oth
+
+        return {
+          'Employee Code': e.employee_code,
+          'Full Name': e.full_name,
+          'First Name': e.first_name,
+          'Last Name': e.last_name || '',
+          'Email': e.email || '',
+          'Phone': e.phone || '',
+          'CNIC': e.cnic || '',
+          'Gender': e.gender || '',
+          'Date of Birth': e.date_of_birth || '',
+          'Date of Joining': e.date_of_joining || '',
+          'Status': e.employment_status,
+          'Active': e.is_active ? 'Yes' : 'No',
+          'Overtime Eligible': e.overtime_eligible ? 'Yes' : 'No',
+          'Device PIN': e.device_pin || '',
+          'Branch': branchName,
+          'Department': deptName,
+          'Designation': desgTitle,
+          'Pay Frequency': latestSalary?.pay_frequency || '',
+          'Currency': latestSalary?.currency || '',
+          'Basic Salary': basic,
+          'House Rent Allowance': hr,
+          'Medical Allowance': med,
+          'Conveyance Allowance': conv,
+          'Utilities Allowance': util,
+          'Other Allowances': oth,
+          'Gross Salary': gross,
+          'Salary Effective Date': latestSalary?.effective_from || '',
+        }
+      })
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData)
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Employees Directory')
+
+      const colWidths = Object.keys(exportData[0] || {}).map((key) => {
+        const maxLength = Math.max(
+          key.length,
+          ...exportData.map((row: any) => String(row[key] || '').length)
+        )
+        return { wch: maxLength + 3 }
+      })
+      worksheet['!cols'] = colWidths
+
+      const dateStr = new Date().toISOString().slice(0, 10)
+      XLSX.writeFile(workbook, `employee_directory_${dateStr}.xlsx`)
+      toast.success('Employees directory exported successfully!')
+    } catch (err) {
+      toast.error('Export failed', { description: err instanceof Error ? err.message : 'Unknown error' })
+    } finally {
+      setExporting(false)
+    }
+  }
+ 
   async function loadLookups() {
     const [b, d, des, sh, emp, dev] = await Promise.all([
       supabase.from('branches').select('id, name').eq('is_active', true).order('name'),
@@ -807,6 +903,10 @@ export function EmployeesPage() {
           <>
             <Button variant="outline" size="sm" onClick={() => void load()}>
               <RefreshCw className="h-4 w-4" /> Refresh
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportExcel} disabled={exporting}>
+              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              Export Excel
             </Button>
             <HasPermission perm="employee.create">
               <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
